@@ -40,21 +40,35 @@ desktop session (it can't run on a locked/headless server).
 
 ## Install
 
+`pip install` adds a global **`lucida`** command (alias: `lucidadl`).
+
+**Recommended — isolated, on PATH ([pipx](https://pipx.pypa.io)):**
+
+```bash
+pip install --user pipx && python -m pipx ensurepath   # once, if you don't have pipx
+git clone https://github.com/your-username/lucidadl
+pipx install ./lucidadl
+pipx run playwright install chromium                    # one-time: download the browser
+```
+
+**Or with plain pip** (into your Python; its `Scripts`/`bin` must be on PATH):
+
 ```bash
 git clone https://github.com/your-username/lucidadl
 cd lucidadl
-pip install .
-playwright install chromium      # one-time: download the browser engine
+pip install .            # or `pip install -e .` to keep editing the code
+playwright install chromium
 ```
 
-(For development: `pip install -e .`.) ffmpeg is bundled via `imageio-ffmpeg`.
+Open a new terminal afterwards so `lucida` is picked up. ffmpeg is bundled
+(`imageio-ffmpeg`) — nothing to install.
 
 ## Quick start
 
 ```bash
-lucidadl setup                                  # once: pass Cloudflare, cache the cookie
-lucidadl track "Red Hot Chili Peppers - Otherside"
-lucidadl album "Red Hot Chili Peppers - Californication" --to mp3 --bitrate 320k -j 8
+lucida setup                                  # once: pass Cloudflare, cache the cookie
+lucida track "Red Hot Chili Peppers - Otherside"
+lucida album "Red Hot Chili Peppers - Californication" --to mp3 --bitrate 320k -j 8
 ```
 
 Files land in `./downloads/` by default.
@@ -66,15 +80,15 @@ skips already-downloaded items — for unattended/scheduled runs).
 
 | Command | Input | Dedup |
 |---------|-------|-------|
-| `lucidadl track "<query\|url>"` | argument(s) | no (force) |
-| `lucidadl album "<query\|url>"` | argument(s) | no (force) |
-| `lucidadl tracks` | `./inputs/tracks.txt` | yes |
-| `lucidadl albums` | `./inputs/albums.txt` | yes |
-| `lucidadl playlist "<apple music url>"` | public playlist | yes |
-| `lucidadl search "<query>"` | interactive pick | no |
-| `lucidadl retry` | `./failed.txt` | yes |
-| `lucidadl setup` | — | — |
-| `lucidadl doctor` | environment check | — |
+| `lucida track "<query\|url>"` | argument(s) | no (force) |
+| `lucida album "<query\|url>"` | argument(s) | no (force) |
+| `lucida tracks` | `./inputs/tracks.txt` | yes |
+| `lucida albums` | `./inputs/albums.txt` | yes |
+| `lucida playlist "<apple music url>"` | public playlist | yes |
+| `lucida search "<query>"` | interactive pick | no |
+| `lucida retry` | `./failed.txt` | yes |
+| `lucida setup` | — | — |
+| `lucida doctor` | environment check | — |
 
 A search takes the best-matching result (title + artist, avoiding remix/cover/karaoke/
 live/… unless you ask for them). A playlist/album URL downloads all its tracks.
@@ -110,14 +124,14 @@ cp inputs/albums.txt.example inputs/albums.txt
 then:
 
 ```bash
-lucidadl tracks      # downloads everything new, skips what's already done
-lucidadl albums
+lucida tracks      # downloads everything new, skips what's already done
+lucida albums
 ```
 
 ## Apple Music playlist
 
 ```bash
-lucidadl playlist "https://music.apple.com/.../pl.xxxxxxxx" [--dry-run] [-j N]
+lucida playlist "https://music.apple.com/.../pl.xxxxxxxx" [--dry-run] [-j N]
 ```
 
 Apple Music is not a lucida source: lucidadl reads the playlist's tracklist (title +
@@ -140,10 +154,10 @@ watchlist with your OS scheduler. A Windows example is provided in `schedule.ps1
 
 ## Troubleshooting
 
-- **"Cloudflare non franchi"** → run `lucidadl setup` again (the cached cookie expired).
+- **"Cloudflare non franchi"** → run `lucida setup` again (the cached cookie expired).
 - **"Executable doesn't exist"** → run `playwright install chromium`.
 - **Search finds nothing** → try a direct URL, or `-s amazon`.
-- **`lucidadl doctor`** → checks Python, Playwright, and reachability.
+- **`lucida doctor`** → checks Python, Playwright, and reachability.
 
 ## License
 

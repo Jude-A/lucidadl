@@ -25,6 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
+lucida = "lucidadl.cli:cli"
 lucidadl = "lucidadl.cli:cli"
 
 [project.urls]
