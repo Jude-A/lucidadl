@@ -166,6 +166,29 @@ check("audio-less zip -> [] (no false success)", _zf3 == [])
 check("audio-less zip still removed", not _os.path.exists(_zp3))
 _sh.rmtree(_d2, ignore_errors=True)
 
+# filename cleanup: strip the artist; number playlist tracks to keep order
+_d4 = tempfile.mkdtemp(prefix="lucidadl_name_")
+def _mk(_n):
+    _p = _os.path.join(_d4, _n)
+    with open(_p, "wb") as _fh:
+        _fh.write(b"x")
+    return _p
+_pf = _org.place_file(_mk("Daft Punk - Aerodynamic.flac"), _d4,
+                      meta={"artist": "Daft Punk", "album": "Discovery", "title": "Aerodynamic"})
+check("filename: artist stripped via API title", _os.path.basename(_pf) == "Aerodynamic.flac")
+_pf = _org.place_file(_mk("Sinyo - Enfant Perdu.flac"), _d4, collection="saddd",
+                      meta={"artist": "Sinyo", "title": "Enfant Perdu"}, track_no="07")
+check("filename: playlist track numbered + artist stripped",
+      _os.path.basename(_pf) == "07 - Enfant Perdu.flac")
+_t, _e = _org._title_and_ext("Black Sabbath - Iron Man (2012 - Remaster).flac",
+                             {"artist": "Black Sabbath"}, prefer_meta_title=False)
+check("title: strip artist prefix but keep ' - ' inside the title",
+      _t == "Iron Man (2012 - Remaster)" and _e == ".flac")
+_t2, _ = _org._title_and_ext("Iron Man (2012 - Remaster).flac", {}, prefer_meta_title=False)
+check("title: no artist match -> keep stem (no false ' - ' strip)",
+      _t2 == "Iron Man (2012 - Remaster)")
+_sh.rmtree(_d4, ignore_errors=True)
+
 # downloader meta builders
 from lucidadl.downloader import _track_meta as _tm, _join_artists as _ja
 check("_join_artists None -> ''", _ja(None) == "")

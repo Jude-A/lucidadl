@@ -70,9 +70,9 @@ def album_dir(music_root: str, tags: Dict[str, str], meta: Dict[str, str] = None
     return os.path.join(music_root, utils.sanitize(artist), utils.sanitize(album))
 
 
-def _move_into(src: str, dest_dir: str) -> str:
+def _move_into(src: str, dest_dir: str, name: str = None) -> str:
     os.makedirs(_long(dest_dir), exist_ok=True)
-    dest = os.path.join(dest_dir, os.path.basename(src))
+    dest = os.path.join(dest_dir, name or os.path.basename(src))
     root, ext = os.path.splitext(dest)
     i = 1
     while os.path.exists(_long(dest)):
@@ -82,28 +82,50 @@ def _move_into(src: str, dest_dir: str) -> str:
     return dest
 
 
+def _title_and_ext(basename: str, meta: Dict[str, str] = None,
+                   prefer_meta_title: bool = True) -> tuple:
+    """The track title (artist prefix removed) + extension. lucida names files
+    'Artist - Title.ext'; since we already sort into Artist/Album folders, the artist in
+    the name is redundant. Use the API title when known; otherwise strip a leading
+    '<artist> - ' (and never a bare ' - ', so titles like 'Iron Man (2012 - Remaster)'
+    survive)."""
+    stem, ext = os.path.splitext(basename)
+    meta = meta or {}
+    if prefer_meta_title and (meta.get("title") or "").strip():
+        return meta["title"].strip(), ext
+    artist = (meta.get("artist") or meta.get("albumartist") or "").strip()
+    if artist and stem.lower().startswith(artist.lower() + " - "):
+        rest = stem[len(artist) + 3:].strip()
+        if rest:
+            return rest, ext
+    return stem, ext
+
+
 def place_file(path: str, music_root: str, collection: str = None,
-               meta: Dict[str, str] = None) -> str:
-    """Move a single audio file into <music_root>/<Artist>/<Album>/, or, when a
-    `collection` (e.g. a playlist name) is given, into <music_root>/<collection>/.
-    `meta` (API-derived artist/album) is a fallback used only when embedded tags
-    are missing; `collection` takes priority over both. Playlists go under
-    <music_root>/Playlists/<collection>/, everything else under
-    <music_root>/Artists/<Artist>/<Album>/."""
+               meta: Dict[str, str] = None, track_no: str = None,
+               prefer_meta_title: bool = True) -> str:
+    """Move a single audio file into <music_root>/Artists/<Artist>/<Album>/, or, when a
+    `collection` (playlist name) is given, into <music_root>/Playlists/<collection>/.
+    The artist prefix is stripped from the filename; playlist tracks are prefixed with
+    `track_no` so they keep the playlist order instead of sorting alphabetically.
+    `meta` (API artist/album) is the fallback used when embedded tags are missing."""
+    title, ext = _title_and_ext(os.path.basename(path), meta, prefer_meta_title)
     if collection:
         dest_dir = os.path.join(music_root, PLAYLISTS_DIR, utils.sanitize(collection))
+        stem = f"{track_no} - {title}" if track_no else title
     else:
         dest_dir = album_dir(os.path.join(music_root, ARTISTS_DIR), read_tags(path), meta)
-    return _move_into(path, dest_dir)
+        stem = title
+    return _move_into(path, dest_dir, utils.sanitize_filename(stem + ext))
 
 
 def process_download(path: str, music_root: str, collection: str = None,
-                     meta: Dict[str, str] = None) -> List[str]:
+                     meta: Dict[str, str] = None, track_no: str = None) -> List[str]:
     """Organize a finished download (single audio file or an album .zip).
     Returns the final file paths. Removes the source zip after extraction."""
     if path.lower().endswith(".zip"):
         return _extract_and_place(path, music_root, collection, meta)
-    return [place_file(path, music_root, collection, meta)]
+    return [place_file(path, music_root, collection, meta, track_no)]
 
 
 def _extract_and_place(zip_path: str, music_root: str, collection: str = None,
@@ -119,7 +141,10 @@ def _extract_and_place(zip_path: str, music_root: str, collection: str = None,
                 fp = os.path.join(root, fn)
                 ext = os.path.splitext(fn)[1].lower()
                 if ext in AUDIO_EXT:
-                    placed.append(place_file(fp, music_root, collection, meta))
+                    # zip tracks: one album-level meta for all, so strip the artist from
+                    # each file's own name rather than reusing the album title.
+                    placed.append(place_file(fp, music_root, collection, meta,
+                                             prefer_meta_title=False))
                 elif ext in IMAGE_EXT:
                     covers.append(fp)
         # drop cover art into the album folder of the first placed track

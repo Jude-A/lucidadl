@@ -180,7 +180,8 @@ async def _download_target(client, state, target, country, out, dedup, organize_
         placed = None
         try:
             placed = await asyncio.to_thread(
-                organize.process_download, path, out, collection, target.get("meta"))
+                organize.process_download, path, out, collection, target.get("meta"),
+                target.get("track_no"))
         except Exception as e:
             log(f"  ⚠ organizing failed ({os.path.basename(path)}): {e}")
         if placed:
@@ -237,8 +238,9 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
 
     # Phase 1 — resolve + expand into a flat track list (one httpx GET per item).
     targets: List[Dict] = []
+    pad = max(2, len(str(len(items))))  # zero-pad width for playlist track numbers
 
-    async def resolve_worker(line: str) -> None:
+    async def resolve_worker(line: str, idx: int) -> None:
         async with sem:
             try:
                 tg = await _resolve_targets(client, line, kind, service, country, strict,
@@ -255,10 +257,13 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                     totals["skip"] += 1
                     failed.append(line)  # so `retry` can re-search it later
                 return
+            for t in tg:  # keep the source order (used to number playlist tracks)
+                t["track_no"] = f"{idx + 1:0{pad}d}"
             async with lock:
                 targets.extend(tg)
 
-    await asyncio.gather(*(resolve_worker(line) for line in items), return_exceptions=True)
+    await asyncio.gather(*(resolve_worker(line, idx) for idx, line in enumerate(items)),
+                         return_exceptions=True)
     if not targets:
         return totals, failed
     log(f"→ {len(targets)} track(s) to download ({jobs} in parallel)…")
