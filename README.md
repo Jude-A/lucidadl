@@ -1,13 +1,14 @@
 # lucidadl
 
+[![PyPI](https://img.shields.io/pypi/v/lucidadl.svg)](https://pypi.org/project/lucidadl/)
 [![CI](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml/badge.svg)](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Python versions](https://img.shields.io/pypi/pyversions/lucidadl.svg)](https://pypi.org/project/lucidadl/)
 
-Fast, parallel command-line music downloader built on top of
-[lucida.to](https://lucida.to). Search or paste a URL, download tracks and albums in
-parallel over plain HTTP, organize them by tags, transcode to the format/bitrate you
-want, and import playlists.
+Fast, parallel command-line music downloader for [lucida.to](https://lucida.to) — fetch
+tracks, albums and playlists from **Qobuz** and **Amazon Music** in lossless **FLAC** (or
+transcode to MP3 / AAC / Opus), neatly organized by tags. Like `yt-dlp`, but for lucida —
+with an interactive terminal UI on top.
 
 **A vibe-coded project.** lucidadl was built quickly and AI-assisted ("vibe coding"). It
 wraps and automates downloading from [lucida.to](https://lucida.to) — inspired by two
@@ -41,6 +42,38 @@ organization, playlist import, existence-aware dedup, and an interactive menu.
 - **Interactive menu** (`lucida ui`, or just `lucida`) and **live progress bars** — one
   bar per parallel download, in any real terminal.
 
+## Demo
+
+Run `lucida` with no arguments for the interactive menu:
+
+```text
+lucidadl  ·  8 concurrent downloads · qobuz · → flac
+~/Downloads/music
+
+► What do you want to do?  (↑/↓, Enter)
+  🎵  Download a track
+  💿  Download an album
+  🅰️   Import an Apple Music playlist
+  🔎  Interactive search
+  📜  Watchlists (tracks / albums)
+  ⚙   Settings
+  🚪  Quit
+```
+
+…or go straight to a command and watch one progress bar per parallel download:
+
+```text
+$ lucida album "Red Hot Chili Peppers - Californication" --to flac -j 8
+
+  ✓ Californication/Around the World.flac   (29.1 MB)
+  ✓ Californication/Otherside.flac          (27.6 MB)
+  Scar Tissue            ━━━━━━━━━━━━━━━━╸━━━━━   68%  ·  3.9 MB/s
+  Get on Top             ━━━━━━━╸━━━━━━━━━━━━━━   31%  ·  4.2 MB/s
+  Around the World       ━━━━━━━━━━━━━━━━━━━━━━  100%
+  Done — OK:15  skipped:0  failed:0
+  → Files in ~/Downloads/music · log: …/run.log
+```
+
 ## How it works (Cloudflare)
 
 lucida.to is behind Cloudflare and plain HTTP gets a `403`. lucidadl solves the
@@ -56,7 +89,8 @@ desktop session (it can't run on a locked/headless server).
 
 ## Install
 
-`pip install` adds a global **`lucida`** command (alias: `lucidadl`).
+`lucidadl` is on [PyPI](https://pypi.org/project/lucidadl/); installing it adds a global
+**`lucida`** command (alias: `lucidadl`).
 
 > **Already using [lucida-downloader](https://github.com/jelni/lucida-downloader)?** Its
 > binary is also called `lucida`, so the two clash on your `PATH`. Just use the
@@ -67,17 +101,23 @@ desktop session (it can't run on a locked/headless server).
 
 ```bash
 pip install --user pipx && python -m pipx ensurepath   # once, if you don't have pipx
-git clone https://github.com/Jude-A/lucidadl
-pipx install ./lucidadl
+pipx install lucidadl
 pipx run playwright install chromium                    # one-time: download the browser
 ```
 
 **Or with plain pip** (into your Python; its `Scripts`/`bin` must be on PATH):
 
 ```bash
+pip install lucidadl
+playwright install chromium
+```
+
+**From source** (for development — see [CONTRIBUTING.md](CONTRIBUTING.md)):
+
+```bash
 git clone https://github.com/Jude-A/lucidadl
 cd lucidadl
-pip install .            # or `pip install -e .` to keep editing the code
+pip install -e ".[dev]"
 playwright install chromium
 ```
 
