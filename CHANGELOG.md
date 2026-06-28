@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-06-28
+
+First stable release. Feature-complete and validated end to end; no code changes since
+0.1.1 — promoted to 1.0 and marked Production/Stable.
+
 ## [0.1.1] - 2026-06-28
 
 ### Added
@@ -52,6 +57,7 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...v1.0.0
 [0.1.1]: https://github.com/Jude-A/lucidadl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Jude-A/lucidadl/releases/tag/v0.1.0
