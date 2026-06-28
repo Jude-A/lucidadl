@@ -111,7 +111,8 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
                downscale: str, out: str, hidden: bool, jobs: int, dedup: bool,
                organize_on: bool = True, to_fmt: Optional[str] = None,
                bitrate: Optional[str] = None, keep_orig: bool = False,
-               collection: Optional[str] = None, force: bool = False) -> None:
+               collection: Optional[str] = None, force: bool = False,
+               quiet_resolve: bool = False) -> None:
     if not items:
         click.secho("Nothing to download.", fg="yellow")
         return
@@ -165,7 +166,8 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
         try:
             totals, failed = await run_batch(client, state, items, kind, service, cc, out,
                                              jobs, dedup, organize_on, tx,
-                                             collection=collection, reporter=reporter)
+                                             collection=collection, reporter=reporter,
+                                             quiet_resolve=quiet_resolve)
         finally:
             await client.aclose()
         log(f"\nDone — OK:{totals['ok']}  skipped:{totals['skip']}  failed:{totals['fail']}")
@@ -333,6 +335,44 @@ def search_cmd(query, service, country, downscale, out, organize_on, jobs,
 
 # --- playlist import (Apple Music / Spotify / Deezer / Tidal) --------------
 
+def _render_playlist(collection: str, tracks: list, dry_run: bool) -> None:
+    """Compact, pretty playlist summary: a rich table for --dry-run, a single header
+    line for a download (the per-track progress bars take over from there). Falls back
+    to plain text when not attached to a terminal (pipes, redirects)."""
+    n = len(tracks)
+    console = None
+    try:
+        from rich.console import Console
+        c = Console()
+        if c.is_terminal:
+            console = c
+    except Exception:
+        console = None
+
+    if console is None:                       # plain output (piped / non-tty)
+        click.secho(f'Playlist "{collection}" — {n} tracks', fg="green")
+        if dry_run:
+            for i, t in enumerate(tracks, 1):
+                click.echo(f"  {i:>3}. {t['artist']} - {t['title']}")
+        return
+
+    from rich.markup import escape
+    coll = escape(collection)  # names may contain '[' etc. — never let them be markup
+    if dry_run:
+        from rich.table import Table
+        table = Table(title=f'Playlist "{coll}" — {n} tracks',
+                      title_style="bold green", header_style="bold", box=None, pad_edge=False)
+        table.add_column("#", justify="right", style="dim", width=4)
+        table.add_column("Artist", style="cyan")
+        table.add_column("Title")
+        for i, t in enumerate(tracks, 1):
+            table.add_row(str(i), escape(t["artist"]), escape(t["title"]))
+        console.print(table)
+    else:
+        console.print(f'\n[bold green]Playlist "{coll}"[/]  ·  [bold]{n}[/] tracks  '
+                      f'·  →  [dim]Playlists/{coll}/[/]\n')
+
+
 async def _playlist(url, dry_run, service, country, downscale, out, hidden,
                     jobs, organize_on=True, to_fmt=None, bitrate=None, keep_orig=False,
                     force=False):
@@ -371,26 +411,22 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
         return
 
     collection = name or "Playlist"
-    click.secho(f"\nPlaylist \"{collection}\" — {len(tracks)} tracks:", fg="green")
-    for t in tracks:
-        click.echo(f"  - {t['artist']} - {t['title']}")
     items = [f"{t['artist']} - {t['title']}" for t in tracks]
     try:
         os.makedirs(INPUTS, exist_ok=True)
         with open(os.path.join(INPUTS, "playlist.txt"), "w", encoding="utf-8") as f:
             f.write("\n".join(items) + "\n")
-        click.echo("(list written to inputs/playlist.txt)")
     except Exception:
         pass
 
+    _render_playlist(collection, tracks, dry_run)
     if dry_run:
-        click.secho("--dry-run: no download.", fg="yellow")
+        click.secho("--dry-run: nothing downloaded (list saved to inputs/playlist.txt).",
+                    fg="yellow")
         return
-    click.secho(f"\nDownloading {len(items)} tracks via {service} ({jobs} in //) "
-                f"→ folder \"{collection}\"…", fg="cyan")
     await _run(items, "track", service, country, downscale, out, hidden, jobs,
                dedup=True, organize_on=organize_on, to_fmt=to_fmt, bitrate=bitrate,
-               keep_orig=keep_orig, collection=collection, force=force)
+               keep_orig=keep_orig, collection=collection, force=force, quiet_resolve=True)
 
 
 @cli.command("playlist")

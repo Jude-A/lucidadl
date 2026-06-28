@@ -16,7 +16,7 @@ from .api import LucidaClient, LucidaError, FALLBACK_SERVICES, normalize_service
 
 
 async def _resolve_url(client: LucidaClient, line: str, service: str, kind: str,
-                       log, strict: bool = False) -> Optional[str]:
+                       log, strict: bool = False, quiet: bool = False) -> Optional[str]:
     line = line.strip()
     if line.lower().startswith("http"):
         return line
@@ -34,9 +34,10 @@ async def _resolve_url(client: LucidaClient, line: str, service: str, kind: str,
         if items:
             url = matching.pick_best(line, items)
             chosen = next((it for it in items if it.get("url") == url), {})
-            tag = f" [fallback {svc}]" if i else ""
-            log(f"  ↳ chosen: \"{chosen.get('title', '?')}\" — {chosen.get('artist', '?')}{tag} "
-                f"(among {len(items)} results)")
+            if not quiet:  # playlists (many items) suppress this per-track confirmation
+                tag = f" [fallback {svc}]" if i else ""
+                log(f"  ↳ chosen: \"{chosen.get('title', '?')}\" — {chosen.get('artist', '?')}{tag} "
+                    f"(among {len(items)} results)")
             return url
     return None
 
@@ -76,9 +77,9 @@ def _filesize_mb(path: Optional[str]) -> float:
         return 0.0
 
 
-async def _resolve_targets(client, line, kind, service, country, strict, log
-                           ) -> Optional[List[Dict]]:
-    url = await _resolve_url(client, line, service, kind, log, strict)
+async def _resolve_targets(client, line, kind, service, country, strict, log,
+                           quiet=False) -> Optional[List[Dict]]:
+    url = await _resolve_url(client, line, service, kind, log, strict, quiet=quiet)
     if not url:
         return None
     pd = await client.fetch_page_data(url, country)        # ONE httpx GET
@@ -185,7 +186,8 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                     kind: str, service: str, country: Optional[str], out: str,
                     jobs: int, dedup: bool, organize_on: bool = True,
                     tx: Optional[Dict] = None, strict: bool = False,
-                    collection: Optional[str] = None, reporter=None
+                    collection: Optional[str] = None, reporter=None,
+                    quiet_resolve: bool = False
                     ) -> Tuple[Dict[str, int], List[str]]:
     if reporter is None:
         reporter = progress.TextReporter(print)
@@ -201,7 +203,8 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
     async def resolve_worker(line: str) -> None:
         async with sem:
             try:
-                tg = await _resolve_targets(client, line, kind, service, country, strict, log)
+                tg = await _resolve_targets(client, line, kind, service, country, strict,
+                                            log, quiet=quiet_resolve)
             except Exception as e:
                 log(f"  ✗ resolving \"{line}\": {e}")
                 async with lock:
