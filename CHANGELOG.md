@@ -6,15 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-28
+
+### Added
+- Playlist tracks are numbered (`NN - Title`) so they keep the playlist order in their
+  flat folder instead of sorting alphabetically.
+
 ### Changed
+- Filenames drop the redundant artist prefix (just `Title.ext`), since tracks are already
+  organized under `Artists/<Artist>/<Album>/`.
 - Cleaner playlist output: a table for `--dry-run` and a single header line + progress
   bars for a download, instead of dumping the whole tracklist and a per-track log line.
 
 ### Fixed
-- Playlist/search resolution now finds niche and multi-artist tracks. When the literal
-  `"Artist - Title"` query returns nothing, it retries with the title alone (and a
-  primary-artist + title form), verifying the artist before accepting — so a broadened
-  search can't silently grab the wrong song.
+- Find niche and multi-artist tracks. When a literal `"Artist - Title"` query returns
+  nothing, retry with the title alone (and a primary-artist + title form), verifying the
+  artist before accepting — so a broadened search can't silently grab the wrong song.
+- Playlist dedup is scoped to the playlist folder: a track already in `Artists/` (or
+  another playlist) is still fetched into a playlist that's missing it, without
+  re-downloading copies already there.
 
 ## [0.1.0] - 2026-06-27
 
@@ -42,5 +52,6 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Jude-A/lucidadl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Jude-A/lucidadl/releases/tag/v0.1.0
