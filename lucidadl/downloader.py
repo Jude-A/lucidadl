@@ -282,4 +282,17 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                     failed.append(target.get("url") or target.get("label"))
 
     await asyncio.gather(*(dl_worker(t) for t in targets), return_exceptions=True)
+
+    # A downloaded playlist is only a real "playlist" to music players/devices (Garmin
+    # watches, phones, car units…) when an .m3u8 sits next to the tracks — a bare folder
+    # isn't one. Write it now that every track has been placed. Best-effort: a failure
+    # here (e.g. odd filesystem) must not turn a successful batch into a failure.
+    if collection and organize_on:
+        try:
+            m3u = await asyncio.to_thread(organize.write_playlist_m3u, out, collection)
+            if m3u:
+                log(f"→ playlist file: {os.path.relpath(m3u, out)}")
+        except Exception as e:
+            log(f"  ⚠ playlist .m3u8 not written: {e}")
+
     return totals, failed

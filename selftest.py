@@ -189,6 +189,32 @@ check("title: no artist match -> keep stem (no false ' - ' strip)",
       _t2 == "Iron Man (2012 - Remaster)")
 _sh.rmtree(_d4, ignore_errors=True)
 
+# playlist .m3u8 sidecar: lists audio in track order, bare filenames, with EXTINF titles
+_d5 = tempfile.mkdtemp(prefix="lucidadl_m3u_")
+_plf = _os.path.join(_d5, "Playlists", "My Mix")
+_os.makedirs(_plf)
+for _n in ("02 - Beta.m4a", "01 - Alpha.flac", "cover.jpg"):
+    with open(_os.path.join(_plf, _n), "wb") as _fh:
+        _fh.write(b"x")
+_m3u = _org.write_playlist_m3u(_d5, "My Mix")
+check("m3u8: named after the playlist, inside its folder",
+      _m3u and _os.path.basename(_m3u) == "My Mix.m3u8"
+      and _os.path.dirname(_m3u) == _plf)
+with open(_m3u, encoding="utf-8") as _fh:
+    _body = _fh.read()
+_audio_lines = [ln for ln in _body.splitlines() if not ln.startswith("#")]
+check("m3u8: tracks in filename order, bare names, no cover.jpg",
+      _audio_lines == ["01 - Alpha.flac", "02 - Beta.m4a"])
+check("m3u8: header + EXTINF with number-prefix stripped",
+      _body.startswith("#EXTM3U") and "#EXTINF:-1,Alpha" in _body
+      and "#EXTINF:-1,Beta" in _body)
+check("m3u8: empty folder -> None (no file written)",
+      _org.write_playlist_m3u(_d5, "Nope") is None)
+check("_m3u_title strips 'NN - ' prefix and extension",
+      _org._m3u_title("07 - Enfant Perdu.m4a") == "Enfant Perdu"
+      and _org._m3u_title("No Prefix.flac") == "No Prefix")
+_sh.rmtree(_d5, ignore_errors=True)
+
 # downloader meta builders
 from lucidadl.downloader import _track_meta as _tm, _join_artists as _ja
 check("_join_artists None -> ''", _ja(None) == "")

@@ -4,9 +4,10 @@ using embedded tags, and auto-extract album zips into the same structure."""
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import zipfile
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from . import utils
 from .api import _long
@@ -117,6 +118,47 @@ def place_file(path: str, music_root: str, collection: str = None,
         dest_dir = album_dir(os.path.join(music_root, ARTISTS_DIR), read_tags(path), meta)
         stem = title
     return _move_into(path, dest_dir, utils.sanitize_filename(stem + ext))
+
+
+def _m3u_title(filename: str) -> str:
+    """Display title for an EXTINF line: the filename minus its extension and minus the
+    leading 'NN - ' track-number prefix that playlist files carry (so the watch shows
+    'Castle (feat. …)', not '01 - Castle …')."""
+    stem = os.path.splitext(filename)[0]
+    m = re.match(r"^\d+\s*-\s*(.+)$", stem)
+    return ((m.group(1) if m else stem).strip()) or stem
+
+
+def write_m3u8(folder: str) -> Optional[str]:
+    """Write/refresh '<folder name>.m3u8' inside `folder`, listing every audio file it
+    holds in filename order — playlist tracks are zero-padded 'NN - …', so that order IS
+    the intended one. Returns the .m3u8 path, or None when the folder has no audio.
+
+    A bare folder of tracks is NOT a playlist to most hardware players (Garmin watches,
+    car head-units, phones): they only surface a playlist when such a sidecar file sits
+    next to the songs. Entries are bare filenames (relative to the .m3u8), so the folder
+    stays self-contained and survives being copied onto a device. UTF-8 (the whole point
+    of the .m3u8 extension) + CRLF is the most broadly accepted encoding."""
+    if not os.path.isdir(_long(folder)):
+        return None
+    name = os.path.basename(os.path.normpath(folder))
+    tracks = sorted(fn for fn in os.listdir(_long(folder))
+                    if os.path.splitext(fn)[1].lower() in AUDIO_EXT)
+    if not tracks:
+        return None
+    lines = ["#EXTM3U"]
+    for fn in tracks:
+        lines.append(f"#EXTINF:-1,{_m3u_title(fn)}")
+        lines.append(fn)
+    m3u = os.path.join(folder, utils.sanitize_filename(name + ".m3u8"))
+    with open(_long(m3u), "w", encoding="utf-8", newline="\r\n") as f:
+        f.write("\n".join(lines) + "\n")
+    return m3u
+
+
+def write_playlist_m3u(music_root: str, collection: str) -> Optional[str]:
+    """Generate the .m3u8 sidecar for a downloaded playlist (Playlists/<collection>/)."""
+    return write_m3u8(os.path.join(music_root, PLAYLISTS_DIR, utils.sanitize(collection)))
 
 
 def process_download(path: str, music_root: str, collection: str = None,

@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Downloading a playlist now writes an `.m3u8` sidecar inside `Playlists/<name>/`,
+  listing its tracks in order. Music players and hardware devices (Garmin watches, car
+  units, phones) only show a real *playlist* when such a file is present — a bare folder
+  of tracks isn't one. Entries are relative filenames, so the folder stays portable.
+
 ## [1.0.0] - 2026-06-28
 
 First stable release. Feature-complete and validated end to end; no code changes since
