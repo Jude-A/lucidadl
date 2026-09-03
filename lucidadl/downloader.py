@@ -53,18 +53,23 @@ async def _resolve_url(client: LucidaClient, line: str, service: str, kind: str,
                 services.append(s)
     bucket = "albums" if kind == "album" else "tracks"
     variants = _query_variants(line)
+    explicit_artist = " - " in line
+    uncertain = False
     for i, svc in enumerate(services):
         for v_idx, q in enumerate(variants):
             res = await client.search(q, svc)
             items = res.get(bucket) or []
-            if not items and kind == "album":
-                items = res.get("tracks") or []
             if not items:
                 continue
             # The full query keeps its lenient match; broadened variants must match the
             # artist, so a title-only search can't silently grab the wrong artist.
-            url = matching.pick_best(line, items, require_artist=(v_idx > 0))
+            url = matching.pick_best(
+                line, items, require_artist=(v_idx > 0),
+                min_score=5.5 if explicit_artist else None,
+                min_margin=0.25 if explicit_artist else 0.0,
+            )
             if not url:
+                uncertain = uncertain or explicit_artist
                 continue
             if not quiet:  # playlists (many items) suppress this per-track confirmation
                 chosen = next((it for it in items if it.get("url") == url), {})
@@ -73,6 +78,9 @@ async def _resolve_url(client: LucidaClient, line: str, service: str, kind: str,
                 log(f"  ↳ chosen: \"{chosen.get('title', '?')}\" — "
                     f"{chosen.get('artist', '?')}{tag}{via} (among {len(items)} results)")
             return url
+    if uncertain and not quiet:
+        log(f"  ↳ no confident match for {line!r}; "
+            "use `lucida search` to choose manually")
     return None
 
 
@@ -172,7 +180,7 @@ async def _download_target(client, state, target, country, out, dedup, organize_
         reporter.finish(url, False, f"  ✗ {label}: {last_err}")
         async with lock:
             totals["fail"] += 1
-            failed.append(url)  # a track URL: `retry` can re-download it directly
+            failed.append(("track", url))  # retry can download this resolved track directly
         return
 
     finals = [path]
@@ -196,10 +204,11 @@ async def _download_target(client, state, target, country, out, dedup, organize_
             reporter.finish(url, False, f"  ✗ {label}: organized with no file (empty archive?)")
             async with lock:
                 totals["fail"] += 1
-                failed.append(url)
+                failed.append(("track", url))
             return
     if tx and tx.get("fmt"):
         converted = []
+        transcode_error = None
         for fp in finals:
             try:
                 converted.append(await asyncio.to_thread(
@@ -208,7 +217,20 @@ async def _download_target(client, state, target, country, out, dedup, organize_
             except Exception as e:
                 log(f"  ⚠ transcode failed ({os.path.basename(fp)}): {e}")
                 converted.append(fp)
+                transcode_error = e
         finals = converted
+        if transcode_error is not None:
+            if reserved:
+                state.release(url)
+            reporter.finish(
+                url, False,
+                f"  ✗ {label}: downloaded, but {tx['fmt']} conversion failed "
+                f"(original kept): {transcode_error}",
+            )
+            async with lock:
+                totals["fail"] += 1
+                failed.append(("track", url))
+            return
 
     async with lock:
         totals["ok"] += 1
@@ -227,12 +249,14 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                     tx: Optional[Dict] = None, strict: bool = False,
                     collection: Optional[str] = None, reporter=None,
                     quiet_resolve: bool = False
-                    ) -> Tuple[Dict[str, int], List[str]]:
+                    ) -> Tuple[Dict[str, int], List[Tuple[str, str]]]:
     if reporter is None:
         reporter = progress.TextReporter(print)
     log = reporter.log
     totals = {"ok": 0, "skip": 0, "fail": 0}
-    failed: List[str] = []
+    # (kind, query-or-URL): resolution failures keep their original kind; failures
+    # after an album was expanded are direct track URLs and can be retried as tracks.
+    failed: List[Tuple[str, str]] = []
     sem = asyncio.Semaphore(max(1, jobs))
     lock = asyncio.Lock()
 
@@ -249,13 +273,13 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                 log(f"  ✗ resolving \"{line}\": {e}")
                 async with lock:
                     totals["fail"] += 1
-                    failed.append(line)
+                    failed.append((kind, line))
                 return
             if tg is None:
-                log(f"  ⃠ not found, skipped: {line}")
+                log(f"  ✗ not found: {line}")
                 async with lock:
-                    totals["skip"] += 1
-                    failed.append(line)  # so `retry` can re-search it later
+                    totals["fail"] += 1
+                    failed.append((kind, line))  # so `retry` searches the right kind
                 return
             for t in tg:  # keep the source order (used to number playlist tracks)
                 t["track_no"] = f"{idx + 1:0{pad}d}"
@@ -279,7 +303,7 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                 log(f"  ✗ {target.get('label')}: {e}")
                 async with lock:
                     totals["fail"] += 1
-                    failed.append(target.get("url") or target.get("label"))
+                    failed.append(("track", target.get("url") or target.get("label")))
 
     await asyncio.gather(*(dl_worker(t) for t in targets), return_exceptions=True)
 

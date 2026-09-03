@@ -234,19 +234,7 @@ _m_sgl = _tm({}, {"title": "One More Time", "artists": [{"name": "Daft Punk"}],
 check("_track_meta single: track artist + nested album.title",
       _m_sgl["albumartist"] == "Daft Punk" and _m_sgl["album"] == "Discovery")
 
-# TUI watchlist delete must preserve comments / blank lines (data-loss fix)
 from lucidadl import tui as _tui
-_wd = tempfile.mkdtemp(prefix="lucidadl_wl_")
-_wf = _os.path.join(_wd, "tracks.txt")
-with open(_wf, "w", encoding="utf-8") as fh:
-    fh.write("# header comment\n\nArtist - Keep\nArtist - Drop\n")
-_tui._remove_entries(_wf, ["Artist - Drop"])
-with open(_wf, encoding="utf-8") as fh:
-    _wc = fh.read()
-check("watchlist delete preserves comment+blank+other, drops selected",
-      "# header comment" in _wc and "\n\n" in _wc and "Artist - Keep" in _wc
-      and "Artist - Drop" not in _wc)
-_sh.rmtree(_wd, ignore_errors=True)
 
 # matching: pick the real track over remixes / the real album over tributes
 from lucidadl import matching as _m
@@ -295,6 +283,15 @@ check("matching: wrong artist loses",
       matching.pick_best("Red Hot Chili Peppers - Otherside",
                          [{"url": "w", "title": "Otherside", "artist": "Macklemore"},
                           {"url": "r", "title": "Otherside", "artist": "Red Hot Chili Peppers"}]) == "r")
+check("matching: automatic mode rejects a wrong-artist-only result",
+      matching.pick_best("Red Hot Chili Peppers - Otherside",
+                         [{"url": "w", "title": "Otherside", "artist": "Macklemore"}],
+                         min_score=5.5, min_margin=0.25) is None)
+check("matching: automatic mode rejects tied editions",
+      matching.pick_best("Artist - Song",
+                         [{"url": "a", "title": "Song", "artist": "Artist"},
+                          {"url": "b", "title": "Song", "artist": "Artist"}],
+                         min_score=5.5, min_margin=0.25) is None)
 
 # resolver query variants (specific -> loose) + artist-gated broadening
 from lucidadl.downloader import _query_variants as _qv
@@ -361,15 +358,103 @@ async def _refresh_storm():
 _aio.run(_refresh_storm())
 check("refresh deduped to 1 browser open", _calls["n"] == 1 and _c.cf == "CF1")
 
-# playlist source detection (Apple handled separately -> None here)
-from lucidadl.api import _playlist_source, FALLBACK_SERVICES
-check("source spotify", _playlist_source("https://open.spotify.com/playlist/x")[0] == "open.spotify.com")
-check("source deezer", _playlist_source("https://www.deezer.com/fr/playlist/1")[0] == "deezer.com")
-check("source tidal", _playlist_source("https://tidal.com/browse/playlist/x")[0] == "tidal.com")
-check("source apple -> None (handled separately)",
-      _playlist_source("https://music.apple.com/fr/playlist/x/pl.1")[0] is None)
-check("source unknown -> None", _playlist_source("https://example.com/x")[0] is None)
+# fallback services remain intentionally small
+from lucidadl.api import FALLBACK_SERVICES
 check("fallback chain", "qobuz" in FALLBACK_SERVICES and "amazon" in FALLBACK_SERVICES)
+
+# first-run UX: the quick doctor must never open a browser unless --live is requested
+import contextlib as _ctxlib
+import io as _io
+from unittest.mock import AsyncMock as _AsyncMock, patch as _patch
+from click.testing import CliRunner as _CliRunner
+from lucidadl import cli as _cli
+
+with _patch.object(_cli, "chromium_installed", _AsyncMock(return_value=True)), \
+     _patch.object(_cli.transcode, "available", return_value=True), \
+     _patch.object(_cli, "load_clearance", return_value=("CF", "UA")), \
+     _patch.object(_cli, "lucida_context") as _browser_ctx:
+    _doctor_out = _io.StringIO()
+    with _ctxlib.redirect_stdout(_doctor_out):
+        _doctor_ok = _aio.run(_cli._doctor(live=False))
+check("doctor: quick check succeeds without opening a browser",
+      _doctor_ok and not _browser_ctx.called and "not run" in _doctor_out.getvalue())
+
+with _patch.object(_cli, "chromium_installed", _AsyncMock(return_value=False)), \
+     _patch.object(_cli, "install_chromium", _AsyncMock(return_value=True)) as _install, \
+     _patch.object(_cli, "acquire_clearance", _AsyncMock(return_value=("CF", "UA"))) as _access:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _setup_ok = _aio.run(_cli._setup())
+check("setup: installs a missing browser before preparing access",
+      _setup_ok and _install.await_count == 1 and _access.await_count == 1)
+
+with _patch.object(_tui.os.path, "exists", return_value=False):
+    check("tui: empty app data is detected as first run", _tui._is_first_run())
+
+# corrupt or hand-edited settings must not prevent the TUI from starting
+with _patch.object(_tui.paths, "load_config", return_value={"jobs": "many"}):
+    check("tui: invalid jobs setting falls back safely", _tui._settings()["jobs"] == 3)
+
+# failures preserve album/track intent, while old files stay backwards-compatible
+_failed_dir = tempfile.mkdtemp(prefix="lucidadl_failed_")
+_failed_path = _os.path.join(_failed_dir, "failed.txt")
+with _patch.object(_cli, "FAILED_PATH", _failed_path):
+    _cli._write_failed([("album", "Artist - Album"), ("track", "Artist - Song")])
+    check("retry: typed failures round-trip", _cli._read_failed() == [
+        ("album", "Artist - Album"), ("track", "Artist - Song")])
+    with open(_failed_path, "w", encoding="utf-8") as _legacy:
+        _legacy.write("Legacy Artist - Song\n")
+    check("retry: legacy failures remain track retries",
+          _cli._read_failed() == [("track", "Legacy Artist - Song")])
+
+    _retry_calls = []
+    async def _fake_retry_run(values, kind, *args, **kwargs):
+        _retry_calls.append((kind, values))
+        if kind == "track":
+            return ({"ok": 0, "skip": 0, "fail": 1}, [("track", values[0])])
+        return ({"ok": 1, "skip": 0, "fail": 0}, [])
+
+    with _patch.object(_cli, "_run", side_effect=_fake_retry_run):
+        with _ctxlib.redirect_stdout(_io.StringIO()):
+            _retry_result = _aio.run(_cli._retry(
+                [("album", "Artist - Album"), ("track", "Artist - Song")],
+                "qobuz", None, "original", _failed_dir, False, 3))
+    check("retry: albums and tracks are dispatched with their original type",
+          _retry_calls == [
+              ("track", ["Artist - Song"]), ("album", ["Artist - Album"])])
+    check("retry: only unresolved items remain",
+          _retry_result[1] == [("track", "Artist - Song")]
+          and _cli._read_failed() == [("track", "Artist - Song")])
+_sh0.rmtree(_failed_dir)
+
+# unsupported playlist URLs fail immediately without launching Playwright
+with _patch.object(_cli, "lucida_context") as _playlist_browser:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _unsupported_ok = _aio.run(_cli._playlist(
+            "https://example.com/list", True, "qobuz", None, "original",
+            tempfile.gettempdir(), False, 3))
+check("playlist: unsupported links fail before opening a browser",
+      not _unsupported_ok and not _playlist_browser.called)
+
+# command contracts used by scripts: missing input/search failure must be non-zero,
+# while an explicit search cancellation remains a normal successful exit
+_runner = _CliRunner()
+_missing_batch = _runner.invoke(
+    _cli.cli, ["tracks", "--file", _os.path.join(tempfile.gettempdir(),
+                                                  "lucidadl-no-such-batch.txt")])
+check("batch: missing file returns exit 1 with guidance",
+      _missing_batch.exit_code == 1 and "Batch file not found" in _missing_batch.output
+      and "--file" in _missing_batch.output)
+
+_search_failure = ({"ok": 0, "skip": 0, "fail": 1}, [])
+with _patch.object(_cli, "_search", _AsyncMock(return_value=_search_failure)):
+    _search_failed = _runner.invoke(_cli.cli, ["search", "anything"])
+check("search: failure result returns exit 1", _search_failed.exit_code == 1)
+with _patch.object(_cli, "_search", _AsyncMock(return_value=None)):
+    _search_cancelled = _runner.invoke(_cli.cli, ["search", "anything"])
+check("search: explicit cancellation returns exit 0", _search_cancelled.exit_code == 0)
+
+_help = _runner.invoke(_cli.cli, ["--help"])
+check("cli: developer debug command is hidden", "  debug " not in _help.output)
 
 print()
 if fails:

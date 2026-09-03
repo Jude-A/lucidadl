@@ -15,7 +15,7 @@ python -m venv .venv
 # Windows:  .venv\Scripts\activate
 # Unix:     source .venv/bin/activate
 pip install -e ".[dev]"      # editable install + build/twine
-playwright install chromium  # one-time, only needed to run the live browser flow
+python -m playwright install chromium  # one-time for the live browser flow
 ```
 
 `pip install -e .` makes the `lucida` / `lucidadl` commands point at your working copy,

@@ -21,7 +21,7 @@ import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from . import utils
+from . import paths, utils
 
 LUCIDA = "https://lucida.to"
 STREAM_ACTION = "/api/fetch/stream/v2"
@@ -428,7 +428,7 @@ async def _playlist_name(page) -> str:
             continue
     try:
         t = (await page.title()).strip()
-        for suf in (" on Apple Music", " - playlist by ", " | Spotify", " | Deezer"):
+        for suf in (" on Apple Music", " - playlist by "):
             i = t.find(suf)
             if i > 0:
                 t = t[:i]
@@ -450,133 +450,26 @@ async def _dismiss_consent(page) -> None:
             continue
 
 
-# --- generic playlist scraping (Spotify / Deezer / Tidal) -------------------
-# Per-source row/title/artist CSS selectors. Best-guess; the failure dump lets us fix
-# them per service if a site's markup differs.
-_PLAYLIST_SOURCES = {
-    "open.spotify.com": {"row": '[data-testid="tracklist-row"]',
-                         "title": '[data-testid="internal-track-link"], a[href*="/track/"]',
-                         "artist": 'a[href*="/artist/"]'},
-    "deezer.com": {"row": '[role="row"]',
-                   "title": 'a[href*="/track/"], [data-testid="title"]',
-                   "artist": 'a[href*="/artist/"]'},
-    "tidal.com": {"row": '[data-test="tracklist-row"]',
-                  "title": '[data-test="table-row-title"], a[href*="/track/"]',
-                  "artist": '[data-test*="artist"] a, a[href*="/artist/"]'},
-    "listen.tidal.com": {"row": '[data-test="tracklist-row"]',
-                         "title": '[data-test="table-row-title"], a[href*="/track/"]',
-                         "artist": '[data-test*="artist"] a, a[href*="/artist/"]'},
-}
-
-_ROWS_JS = """([rowSel, titleSel, artistSel]) =>
-  Array.from(document.querySelectorAll(rowSel)).map(r => {
-    const t = r.querySelector(titleSel);
-    const arts = Array.from(r.querySelectorAll(artistSel))
-      .map(a => (a.textContent || '').trim()).filter(Boolean);
-    return { title: t ? (t.textContent || '').trim() : '', artist: arts.join(', ') };
-  })"""
-
-_SCROLL_GENERIC_JS = """(rowSel) => {
-  let el = document.querySelector(rowSel);
-  while (el) {
-    const s = getComputedStyle(el);
-    if (/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 10) break;
-    el = el.parentElement;
-  }
-  const t = el || document.scrollingElement || document.documentElement;
-  const step = Math.max(200, Math.round((t.clientHeight || window.innerHeight) * 0.7));
-  t.scrollTop += step;
-  return { top: t.scrollTop, h: t.scrollHeight, c: t.clientHeight };
-}"""
-
-
-def _playlist_source(url: str):
-    from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").lower()
-    for h, sel in _PLAYLIST_SOURCES.items():
-        if host == h or host.endswith("." + h) or h in host:
-            return h, sel
-    return None, None
-
-
-# Spotify/Deezer/Tidal scrapers exist (below) but their selectors are unvalidated;
-# disabled for now — flip to True to re-enable them.
-_PLAYLIST_OTHERS_ENABLED = False
-
-
 async def playlist_tracklist(page, url: str, log=print):
-    """Scrape a public playlist -> (name, [{title, artist}]). Only Apple Music is
-    active for now; Spotify/Deezer/Tidal are coded but disabled (_PLAYLIST_OTHERS_ENABLED)."""
+    """Scrape a public Apple Music playlist -> (name, [{title, artist}])."""
     from urllib.parse import urlparse
     host = (urlparse(url).hostname or "").lower()
-    if "music.apple.com" in host:
-        return await applemusic_tracklist(page, url, log)
-    if not _PLAYLIST_OTHERS_ENABLED:
-        log("  source not supported for now — only Apple Music is active "
-            "(Spotify/Deezer/Tidal coming soon).")
+    if host != "music.apple.com" and not host.endswith(".music.apple.com"):
+        log("  unsupported playlist URL — paste a public music.apple.com playlist link")
         return "", []
-    src, sel = _playlist_source(url)
-    if not sel:
-        log(f"  unrecognized playlist source: {host or url}")
-        return "", []
-    return await _scrape_playlist(page, url, sel, src, log)
-
-
-async def _scrape_playlist(page, url, sel, label, log):
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except Exception as e:
-        log(f"  {label} navigation: {e}")
-    await page.wait_for_timeout(1500)
-    await _dismiss_consent(page)
-    try:
-        await page.wait_for_selector(sel["row"], timeout=30_000)
-    except Exception:
-        pass
-
-    name = await _playlist_name(page)
-    tracks: List[Dict[str, str]] = []
-    seen = set()
-    stable = 0
-    args = [sel["row"], sel["title"], sel["artist"]]
-    for _ in range(800):
-        try:
-            rows = await page.evaluate(_ROWS_JS, args)
-        except Exception:
-            rows = []
-        new = 0
-        for t in rows:
-            title = (t.get("title") or "").strip()
-            artist = (t.get("artist") or "").strip()
-            if not title:
-                continue
-            key = (artist.lower(), title.lower())
-            if key not in seen:
-                seen.add(key)
-                tracks.append({"title": title, "artist": artist})
-                new += 1
-        if new:
-            log(f"    … {len(tracks)} titles")
-        try:
-            pos = await page.evaluate(_SCROLL_GENERIC_JS, sel["row"])
-        except Exception:
-            pos = None
-        await page.wait_for_timeout(300)
-        at_bottom = bool(pos) and (pos["top"] + pos["c"] >= pos["h"] - 8)
-        stable = stable + 1 if new == 0 else 0
-        if (at_bottom and stable >= 3) or stable >= 30:
-            break
+    name, tracks = await applemusic_tracklist(page, url, log)
     if not tracks:
-        await _dump_playlist_debug(page, label)
+        await _dump_playlist_debug(page)
     return name, tracks
 
 
-async def _dump_playlist_debug(page, label) -> None:
+async def _dump_playlist_debug(page) -> None:
+    """Best-effort capture for support, kept with other app data (never in the cwd)."""
     try:
-        out = os.path.join(os.getcwd(), f"{label}_debug.html")
+        out = os.path.join(paths.DATA_DIR, "applemusic_debug.html")
         with open(out, "w", encoding="utf-8") as f:
             f.write(await page.content())
-        await page.screenshot(path=os.path.join(os.getcwd(), f"{label}_debug.png"))
+        await page.screenshot(path=os.path.join(paths.DATA_DIR, "applemusic_debug.png"))
     except Exception:
         pass
 

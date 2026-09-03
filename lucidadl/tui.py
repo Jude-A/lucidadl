@@ -17,7 +17,7 @@ from . import paths, transcode
 _TO_NONE = "(none — keep the source format)"
 _SERVICES = ["qobuz", "amazon"]
 # actions whose output is worth reading before the menu redraws (we pause after them)
-_PAUSE_AFTER = {"track", "album", "playlist", "search", "watchlist", "retry"}
+_PAUSE_AFTER = {"download", "playlist", "batch", "retry", "tools", "onboarding"}
 
 
 def _isatty(stream) -> bool:
@@ -29,12 +29,20 @@ def _onoff(b: bool) -> str:
     return "yes" if b else "no"
 
 
+def _is_first_run() -> bool:
+    return not (os.path.exists(paths.CONFIG_PATH) or os.path.exists(paths.CLEARANCE_PATH))
+
+
 # --- persisted settings -----------------------------------------------------
 
 def _settings() -> dict:
     cfg = paths.load_config()
+    try:
+        jobs = max(1, min(100, int(cfg.get("jobs", 3) or 3)))
+    except (TypeError, ValueError):
+        jobs = 3
     return {
-        "jobs": int(cfg.get("jobs", 3) or 3),
+        "jobs": jobs,
         "service": cfg.get("service") if cfg.get("service") in _SERVICES else "qobuz",
         "to": cfg.get("to") or None,
         "bitrate": cfg.get("bitrate") or None,
@@ -67,9 +75,9 @@ def _opts_line(s: dict) -> str:
 
 # --- small input helpers ----------------------------------------------------
 
-def _ask_text(questionary, message: str, instruction: str = "") -> str:
+def _ask_text(questionary, message: str, instruction: str = "", default: str = "") -> str:
     """Text prompt that collapses cancel/empty/whitespace into '' (caller returns)."""
-    v = questionary.text(message, instruction=instruction).ask()
+    v = questionary.text(message, instruction=instruction, default=default).ask()
     return (v or "").strip()
 
 
@@ -88,24 +96,25 @@ def _open_path(path: str, console) -> None:
         console.print(f"[yellow]Could not open {path}: {e}[/]")
 
 
-def _append_line(path: str, line: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(line.rstrip("\n") + "\n")
-
-
-def _remove_entries(path: str, entries) -> None:
-    """Delete only the given entry lines, PRESERVING comments and blank lines (the
-    watchlist files ship with a documented header we must not wipe)."""
-    targets = set(entries)
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = f.readlines()
-    except OSError:
+def _show_run_summary(result, out: str, console) -> None:
+    """Give menu users one stable, readable outcome after the live progress output."""
+    if not result:
         return
-    kept = [ln for ln in raw if ln.strip() not in targets]
-    with open(path, "w", encoding="utf-8") as f:
-        f.writelines(kept)
+    from rich.panel import Panel
+    totals, remaining = result
+    failed = max(totals.get("fail", 0), len(remaining))
+    color = "red" if failed else "green"
+    next_step = ("\n[bold]Next:[/] choose Retry failures from the main menu."
+                 if failed else "")
+    console.print(Panel(
+        f"[green]{totals.get('ok', 0)} downloaded[/]  ·  "
+        f"{totals.get('skip', 0)} already present  ·  "
+        f"[{color}]{failed} failed[/]\n"
+        f"[dim]Files:[/] {out}{next_step}",
+        title="Download complete" if not failed else "Download incomplete",
+        border_style=color,
+        expand=False,
+    ))
 
 
 # --- main loop --------------------------------------------------------------
@@ -119,6 +128,7 @@ def run() -> None:
         import questionary
         from questionary import Choice
         from rich.console import Console
+        from rich.panel import Panel
     except Exception as e:  # pragma: no cover
         print(f"UI unavailable ({e}). Install: pip install rich questionary")
         return
@@ -126,30 +136,41 @@ def run() -> None:
     console = Console()
     from . import cli  # deferred: cli imports tui for the command
 
-    console.print("[dim]Esc cancels a field · Ctrl-C interrupts a download.[/]")
     while True:
         s = _settings()
-        console.print(f"\n[bold cyan]lucidadl[/]  ·  [dim]{_opts_line(s)}[/]\n"
-                      f"[dim]{paths.default_music_dir()}[/]")
+        access_saved = os.path.exists(paths.CLEARANCE_PATH)
+        access = "[green]prepared[/]" if access_saved else "[yellow]setup needed[/]"
+        console.print(Panel(
+            f"[bold]{_opts_line(s)}[/]\n"
+            f"[dim]Music:[/] {paths.default_music_dir()}\n"
+            f"[dim]Access:[/] {access}",
+            title="[bold cyan]lucidadl[/]", border_style="cyan", expand=False,
+        ))
 
-        menu = [
-            Choice("🎵  Download a track", "track"),
-            Choice("💿  Download an album", "album"),
-            Choice("🅰️   Import an Apple Music playlist", "playlist"),
-            Choice("🔎  Interactive search", "search"),
-            Choice("📜  Watchlists (tracks / albums)", "watchlist"),
+        if _is_first_run():
+            console.print(Panel(
+                "Welcome! Start with [bold]Set up lucidadl[/]. It checks the browser, "
+                "lets you confirm the music folder, and prepares access to lucida.to.",
+                title="First time here?", border_style="yellow", expand=False,
+            ))
+
+        menu = []
+        if not access_saved:
+            menu.append(Choice("✨  Set up lucidadl (recommended)", "onboarding"))
+        menu += [
+            Choice("⬇   Download music", "download"),
+            Choice("🎶  Import an Apple Music playlist", "playlist"),
+            Choice("📄  Download from a .txt file", "batch"),
         ]
-        failed = cli._read_lines(paths.FAILED_PATH)
+        failed = cli._read_failed()
         if failed:
             menu.append(Choice(f"🔁  Retry failures ({len(failed)})", "retry"))
         menu += [
             Choice("⚙   Settings", "settings"),
-            Choice("🛡   Prepare access (Cloudflare)", "setup"),
-            Choice("📂  Open the music folder", "openfolder"),
-            Choice("📄  View the log", "log"),
+            Choice("🧰  Help, access and diagnostics", "tools"),
             Choice("🚪  Quit", "quit"),
         ]
-        action = questionary.select("What would you like to do?", choices=menu,
+        action = questionary.select("What do you want to do?", choices=menu,
                                     qmark="►", instruction="(↑/↓, Enter)").ask()
 
         if action in (None, "quit"):
@@ -182,10 +203,20 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
 
     def go(items, kind, dedup, collection=None):
         _warn_browser()
-        asyncio.run(cli._run(items, kind, s["service"], None, "original", out,
-                             hidden=False, jobs=s["jobs"], dedup=dedup, organize_on=True,
-                             to_fmt=s["to"], bitrate=s["bitrate"], keep_orig=s["keep_orig"],
-                             collection=collection, force=s["force"]))
+        result = asyncio.run(cli._run(
+            items, kind, s["service"], None, "original", out, hidden=False,
+            jobs=s["jobs"], dedup=dedup, organize_on=True, to_fmt=s["to"],
+            bitrate=s["bitrate"], keep_orig=s["keep_orig"], collection=collection,
+            force=s["force"],
+        ))
+        _show_run_summary(result, out, console)
+        return result
+
+    if action == "onboarding":
+        return _onboarding_action(console, cli, questionary)
+
+    if action == "download":
+        return _download_action(s, console, cli, questionary, go)
 
     if action == "track":
         q = _ask_text(questionary, "Track or URL:",
@@ -217,40 +248,103 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
                                   keep_orig=s["keep_orig"], force=s["force"]))
         return True
 
-    if action == "search":
-        return _search_action(s, console, cli, questionary, go)
-
-    if action == "watchlist":
-        return _watchlist_action(s, console, cli, questionary, go)
+    if action == "batch":
+        return _batch_action(console, cli, questionary, go)
 
     if action == "retry":
-        items = cli._read_lines(paths.FAILED_PATH)
+        items = cli._read_failed()
         if not items:
             console.print("[yellow]No failures to retry.[/]")
             return False
-        go(items, "track", dedup=False)
+        _warn_browser()
+        result = asyncio.run(cli._retry(
+            items, s["service"], None, "original", out, hidden=False, jobs=s["jobs"],
+            organize_on=True, to_fmt=s["to"], bitrate=s["bitrate"],
+            keep_orig=s["keep_orig"], force=s["force"],
+        ))
+        _show_run_summary(result, out, console)
         return True
 
     if action == "settings":
         _settings_menu(s, console, questionary)
         return False
 
-    if action == "setup":
-        _warn_browser()
-        asyncio.run(cli._setup())
-        return False
+    if action == "tools":
+        return _tools_action(console, cli, questionary)
 
+    return False
+
+
+def _onboarding_action(console, cli, questionary) -> bool:
+    """Small first-run flow: confirm the destination, then prepare browser access."""
+    folder = paths.default_music_dir()
+    console.print(f"\nMusic will be saved in:\n[bold]{folder}[/]")
+    keep = questionary.confirm("Use this folder?", default=True).ask()
+    if keep is None:
+        return False
+    if not keep:
+        chosen = _ask_text(questionary, "Music folder:", "(empty = cancel)")
+        if not chosen:
+            return False
+        folder = paths.set_music_dir(chosen)
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except Exception as e:
+            console.print(f"[red]Could not create the music folder: {e}[/]")
+            return True
+        console.print(f"[green]✓ Music folder saved: {folder}[/]")
+    console.print("\nNext, lucidadl will prepare its browser access once.")
+    return bool(asyncio.run(cli._setup()))
+
+
+def _download_action(s, console, cli, questionary, go) -> bool:
+    """Group the three everyday download paths behind one clear menu."""
+    from questionary import Choice
+    action = questionary.select("Download music:", choices=[
+        Choice("🎵  Track — enter an artist, title or URL", "track"),
+        Choice("💿  Album — enter an artist, album or URL", "album"),
+        Choice("🔎  Search — browse results before downloading", "search"),
+        Choice("← Back", "back"),
+    ]).ask()
+    if action in (None, "back"):
+        return False
+    if action == "search":
+        return _search_action(s, console, cli, questionary, go)
+    prompt = "Track or URL:" if action == "track" else "Album or URL:"
+    example = ("(e.g. Daft Punk - Around the World ; empty = back)"
+               if action == "track" else
+               "(e.g. Daft Punk - Discovery ; empty = back)")
+    value = _ask_text(questionary, prompt, example)
+    if not value:
+        return False
+    go([value], action, dedup=False)
+    return True
+
+
+def _tools_action(console, cli, questionary) -> bool:
+    from questionary import Choice
+    action = questionary.select("Help and diagnostics:", choices=[
+        Choice("🛡   Prepare or refresh access", "setup"),
+        Choice("🩺  Check the installation", "doctor"),
+        Choice("🌐  Test browser + lucida.to", "doctor-live"),
+        Choice("📂  Open the music folder", "openfolder"),
+        Choice("📄  Open the last run log", "log"),
+        Choice("← Back", "back"),
+    ]).ask()
+    if action in (None, "back"):
+        return False
+    if action == "setup":
+        return bool(asyncio.run(cli._setup()))
+    if action in ("doctor", "doctor-live"):
+        asyncio.run(cli._doctor(live=action == "doctor-live"))
+        return True
     if action == "openfolder":
         _open_path(paths.default_music_dir(), console)
         return False
-
-    if action == "log":
-        if os.path.exists(paths.LOG_PATH):
-            _open_path(paths.LOG_PATH, console)
-        else:
-            console.print("[yellow]No log yet.[/]")
-        return False
-
+    if os.path.exists(paths.LOG_PATH):
+        _open_path(paths.LOG_PATH, console)
+    else:
+        console.print("[yellow]No download log yet.[/]")
     return False
 
 
@@ -276,73 +370,51 @@ def _search_action(s, console, cli, questionary, go) -> bool:
         alb = f"  [{it.get('album')}]" if it.get("album") else ""
         choices.append(Choice(f"{tag} {it.get('title', '?')} — {it.get('artist', '?')}{alb}",
                               (kind, it)))
-    choices.append(Choice("← Cancel", None))
+    choices.append(Choice("← Cancel", "cancel"))
     pick = questionary.select("Result to download:", choices=choices).ask()
-    if not pick:
+    if pick in (None, "cancel"):
         return False
     kind, item = pick
     go([item["url"]], kind, dedup=False)
     return True
 
 
-def _watchlist_action(s, console, cli, questionary, go) -> bool:
+def _batch_action(console, cli, questionary, go) -> bool:
+    """Download a one-off batch from a user-owned text file; never edit that file."""
     from questionary import Choice
-    which = questionary.select("Which list?", choices=[
-        Choice("Tracks  (tracks.txt)", "tracks"),
-        Choice("Albums  (albums.txt)", "albums"),
-        Choice("← Back", None),
+    which = questionary.select("What does the file contain?", choices=[
+        Choice("🎵  Tracks — one search or URL per line", "tracks"),
+        Choice("💿  Albums — one search or URL per line", "albums"),
+        Choice("← Back", "back"),
     ]).ask()
-    if not which:
+    if which in (None, "back"):
         return False
     kind = "track" if which == "tracks" else "album"
-    f = os.path.join(cli.INPUTS, f"{which}.txt")
-    lines = cli._read_lines(f)
-    op = questionary.select(f"{which}.txt — {len(lines)} item(s):", choices=[
-        Choice("⬇   Download all", "dl"),
-        Choice("👁   View the list", "view"),
-        Choice("➕  Add", "add"),
-        Choice("🗑   Remove", "del"),
-        Choice("← Back", None),
-    ]).ask()
-    if not op:
+    default = os.path.abspath(os.path.join(cli.INPUTS, f"{which}.txt"))
+    raw_path = _ask_text(
+        questionary, "Text file:",
+        "(comments starting with # and blank lines are ignored; empty = back)",
+        default=default,
+    )
+    if not raw_path:
         return False
-
-    if op == "view":
-        if lines:
-            for line in lines:
-                console.print(f"  • {line}")
-        else:
-            console.print("[yellow](empty list)[/]")
+    file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(
+        raw_path.strip('"'))))
+    if not os.path.isfile(file_path):
+        console.print(f"[red]File not found: {file_path}[/]")
         return True
-
-    if op == "add":
-        added = 0
-        while True:
-            it = _ask_text(questionary, "Add (artist - track/album, or URL ; empty = done):")
-            if not it:
-                break
-            _append_line(f, it)
-            added += 1
-            console.print(f"[green]+ {it}[/]")
-        if added:
-            console.print(f"[green]{added} added to {which}.txt.[/]")
-        return added > 0
-
-    if op == "del":
-        if not lines:
-            console.print("[yellow](empty list)[/]")
-            return False
-        rm = questionary.checkbox("Check (Space) the items to remove:",
-                                  choices=lines).ask()
-        if rm:
-            _remove_entries(f, rm)  # preserves comments / blank lines
-            console.print(f"[green]{len(rm)} removed.[/]")
-        return bool(rm)
-
-    # op == "dl"
+    lines = cli._read_lines(file_path)
     if not lines:
-        console.print(f"[yellow]{which}.txt is empty — add some items first.[/]")
+        console.print("[yellow]The file contains no items to download.[/]")
+        return True
+    label = "tracks" if kind == "track" else "albums"
+    confirmed = questionary.confirm(
+        f"Download {len(lines)} {label} from {os.path.basename(file_path)}?",
+        default=True,
+    ).ask()
+    if not confirmed:
         return False
+    console.print(f"[dim]The source file will not be modified: {file_path}[/]")
     go(lines, kind, dedup=True)
     return True
 

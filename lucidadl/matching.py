@@ -89,11 +89,12 @@ def artist_matches(query: str, item: Dict[str, str]) -> bool:
 
 
 def pick_best(query: str, items: List[Dict[str, str]],
-              require_artist: bool = False) -> Optional[str]:
+              require_artist: bool = False, min_score: Optional[float] = None,
+              min_margin: float = 0.0) -> Optional[str]:
     """Return the URL of the best-scoring candidate (ties → earliest result). When
     `require_artist` is set and the query names an artist, only candidates whose artist
-    matches are considered, and None is returned if none do (so a broadened title-only
-    search can't silently pick a track by the wrong artist)."""
+    matches are considered. Optional score/margin guards let automatic downloads reject
+    a weak or ambiguous match while interactive search can keep showing every result."""
     if not items:
         return None
     pool = items
@@ -102,9 +103,13 @@ def pick_best(query: str, items: List[Dict[str, str]],
         if not matched:
             return None
         pool = matched
-    best_i, best_s = 0, None
-    for i, it in enumerate(pool):
-        sc = score(query, it)
-        if best_s is None or sc > best_s:
-            best_s, best_i = sc, i
+    ranked = sorted(enumerate(pool), key=lambda pair: score(query, pair[1]), reverse=True)
+    best_i, best_item = ranked[0]
+    best_s = score(query, best_item)
+    if min_score is not None and best_s < min_score:
+        return None
+    if len(ranked) > 1:
+        second_s = score(query, ranked[1][1])
+        if best_s - second_s < min_margin:
+            return None
     return pool[best_i].get("url")

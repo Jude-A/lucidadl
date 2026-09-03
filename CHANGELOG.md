@@ -6,11 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-03
+
 ### Added
 - Downloading a playlist now writes an `.m3u8` sidecar inside `Playlists/<name>/`,
   listing its tracks in order. Music players and hardware devices (Garmin watches, car
   units, phones) only show a real *playlist* when such a file is present — a bare folder
   of tracks isn't one. Entries are relative filenames, so the folder stays portable.
+- `lucida doctor --live` explicitly runs the browser and network check when needed.
+
+### Changed
+- The interactive menu groups everyday downloads and maintenance tools into clearer
+  sections, with a guided first-run setup and visible access status.
+- `lucida setup` now installs the matching Playwright Chromium build when it is missing,
+  so the recommended pipx installation no longer needs a separate Playwright command.
+- `lucida doctor` is now a quick local check by default and never opens a browser unless
+  `--live` is supplied.
+- Failed albums and tracks keep their original type, so `lucida retry` no longer retries
+  an album as if it were a song. Download commands also return a failing exit status when
+  work remains, which makes scheduled runs reliable.
+- Missing matches and failed requested transcodes are now reported as failures rather
+  than successful skips/downloads; the original audio is kept if conversion fails.
+- Automatic `artist - title` matching rejects weak or ambiguous results instead of
+  silently downloading a likely-wrong song.
+- Playlist import now clearly supports Apple Music only; unused, unvalidated stubs for
+  other services were removed.
+- The former “watchlists” are now presented for what they are: one-off batch downloads
+  from any `.txt` file. The TUI asks for a file and never edits it; the existing
+  `lucida tracks` and `lucida albums` commands remain compatible.
+- The TUI now ends downloads with a compact success/skip/failure summary. Missing batch
+  files and interactive-search failures also return useful messages and non-zero exit
+  statuses, while cancelling a search remains successful.
+- Developer diagnostics remain available but no longer clutter the main command list.
 
 ## [1.0.0] - 2026-06-28
 
@@ -63,7 +90,8 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...v1.0.0
 [0.1.1]: https://github.com/Jude-A/lucidadl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Jude-A/lucidadl/releases/tag/v0.1.0
