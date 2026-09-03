@@ -165,7 +165,7 @@ def run() -> None:
             menu.append(Choice("✨  Set up lucidadl (recommended)", "onboarding"))
         menu += [
             Choice("⬇   Download music", "download"),
-            Choice("🎶  Playlists — Apple Music or an edited list", "playlist"),
+            Choice("🎶  Playlists — streaming link or an edited list", "playlist"),
             Choice("📄  Download from a .txt file", "batch"),
         ]
         failed = cli._read_failed()
@@ -247,14 +247,17 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
     if action == "playlist":
         from questionary import Choice
         source = questionary.select("Playlist source:", choices=[
-            Choice("🍎  Public Apple Music link", "apple"),
+            Choice("🔗  Public streaming link", "remote"),
             Choice("📄  Edited .txt list", "file"),
             Choice("← Back", "back"),
         ]).ask()
         if source in (None, "back"):
             return False
-        if source == "apple":
-            url = _ask_text(questionary, "Apple Music playlist URL:", "(empty = back)")
+        if source == "remote":
+            url = _ask_text(
+                questionary, "Playlist URL:",
+                "(public Apple Music, Spotify or Deezer link; empty = back)",
+            )
             if not url:
                 return False
         else:
@@ -280,14 +283,14 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
             Choice("⬇   Download or resume this playlist", "download"),
             Choice("✓   Check every automatic match first", "check"),
             *([Choice("📄  Only extract and save the track list", "list")]
-              if source == "apple" else []),
+              if source == "remote" else []),
             Choice("← Back", "back"),
         ]).ask()
         if mode in (None, "back"):
             return False
-        if not (source == "apple" and mode == "list"):
+        if not (source == "remote" and mode == "list"):
             _warn_browser()
-        if source == "apple":
+        if source == "remote":
             asyncio.run(cli._playlist(
                 url, mode == "list", s["service"], None, "original", out,
                 hidden=False, jobs=s["jobs"], organize_on=True, to_fmt=s["to"],

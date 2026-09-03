@@ -37,6 +37,27 @@ def _split_query(q: str):
     return "", q.strip()
 
 
+def _primary_artist(s: str) -> str:
+    """Return the first credited artist without splitting names containing ``&``."""
+    return re.split(
+        r"\s*(?:,|/| feat\.?| ft\.?| x | vs\.?| with )\s*",
+        s or "", maxsplit=1, flags=re.I,
+    )[0].strip()
+
+
+def _has_unrequested_variant(query: str, item: Dict[str, str]) -> bool:
+    """Reject a clearly labelled alternate version during automatic matching."""
+    title = item.get("title", "")
+    title_tokens = _tokens(title)
+    query_tokens = _tokens(query)
+    if any(token in title_tokens and token not in query_tokens for token in _BAD_TOKENS):
+        return True
+    normalized_title = _norm(title)
+    normalized_query = _norm(query)
+    return any(phrase in normalized_title and phrase not in normalized_query
+               for phrase in _BAD_PHRASES)
+
+
 def score(query: str, item: Dict[str, str]) -> float:
     artist_q, title_q = _split_query(query)
     q_tokens = _tokens(query)
@@ -78,14 +99,21 @@ def score(query: str, item: Dict[str, str]) -> float:
 
 
 def artist_matches(query: str, item: Dict[str, str]) -> bool:
-    """True if the item's artist (or row context) overlaps the query's artist tokens.
-    Used to reject wrong-artist hits when a search was broadened to the title alone."""
+    """True when the first credited artist reasonably matches the requested artist.
+
+    Checking only for any shared token accepted covers where the requested performer was
+    merely a secondary credit. Context remains a fallback for older search responses that
+    do not expose a dedicated artist field.
+    """
     artist_q, _ = _split_query(query)
-    aq = _tokens(artist_q)
+    aq = _tokens(_primary_artist(artist_q))
     if not aq:
         return True  # no artist asked for → nothing to reject
-    pool = _tokens(item.get("artist", "")) | _tokens(item.get("context") or "")
-    return bool(aq & pool)
+    artist = item.get("artist", "")
+    if artist:
+        candidate = _tokens(_primary_artist(artist))
+        return len(aq & candidate) / len(aq) >= 0.6
+    return bool(aq & _tokens(item.get("context") or ""))
 
 
 def pick_best(query: str, items: List[Dict[str, str]],
@@ -98,11 +126,17 @@ def pick_best(query: str, items: List[Dict[str, str]],
     if not items:
         return None
     pool = items
-    if require_artist:
+    automatic = min_score is not None
+    artist_q, _ = _split_query(query)
+    if require_artist or (automatic and artist_q):
         matched = [it for it in items if artist_matches(query, it)]
         if not matched:
             return None
         pool = matched
+    if automatic:
+        pool = [it for it in pool if not _has_unrequested_variant(query, it)]
+        if not pool:
+            return None
     ranked = sorted(enumerate(pool), key=lambda pair: score(query, pair[1]), reverse=True)
     best_i, best_item = ranked[0]
     best_s = score(query, best_item)

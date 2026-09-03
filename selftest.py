@@ -5,7 +5,9 @@ import asyncio as _aio
 from lucidadl import utils, matching
 from lucidadl.api import (
     LucidaClient, normalize_service, default_country, _long, _apple_tracks_from_obj,
-    _apple_playlist_from_scripts, is_apple_playlist_url, DOWNSCALE_CHOICES,
+    _apple_playlist_from_scripts, is_apple_playlist_url, playlist_source,
+    _spotify_playlist_from_html, _spotify_total_from_html,
+    _deezer_playlist_from_obj, DOWNSCALE_CHOICES,
 )
 from lucidadl.models import FailedItem
 
@@ -42,6 +44,11 @@ check("Apple URL validation accepts playlists only",
       is_apple_playlist_url("https://music.apple.com/fr/playlist/mix/pl.123")
       and not is_apple_playlist_url("https://music.apple.com/fr/album/record/123")
       and not is_apple_playlist_url("https://example.com/playlist/mix/pl.123"))
+check("public playlist source detection",
+      playlist_source("https://music.apple.com/fr/playlist/mix/pl.123") == "apple"
+      and playlist_source("https://open.spotify.com/playlist/abc?si=share") == "spotify"
+      and playlist_source("https://www.deezer.com/fr/playlist/123") == "deezer"
+      and playlist_source("https://open.spotify.com/album/abc") == "")
 
 # long path (Windows)
 import os as _os
@@ -82,6 +89,47 @@ _duplicate_name, _duplicate_tracks = _apple_playlist_from_scripts([
     __import__("json").dumps(_duplicate_sample)])
 check("apple structured extractor preserves intentional duplicate positions",
       _duplicate_name == "Loop" and len(_duplicate_tracks) == 2)
+
+# Spotify and Deezer importers parse public metadata only; downloads still use lucida.
+_spotify_obj = {
+    "props": {"pageProps": {"state": {"data": {"entity": {
+        "type": "playlist", "name": "My Spotify Mix", "trackList": [
+            {"entityType": "track", "title": "One", "subtitle": "Artist\xa0A"},
+            {"entityType": "episode", "title": "Podcast", "subtitle": "Host"},
+            {"entityType": "track", "title": "One", "subtitle": "Artist\xa0A"},
+        ],
+    }}}}},
+}
+_spotify_html = ('<script id="__NEXT_DATA__" type="application/json">'
+                 + __import__("json").dumps(_spotify_obj) + '</script>')
+_spotify_name, _spotify_tracks = _spotify_playlist_from_html(_spotify_html)
+check("spotify extractor keeps order/duplicates and skips episodes",
+      _spotify_name == "My Spotify Mix"
+      and _spotify_tracks == [
+          {"title": "One", "artist": "Artist A"},
+          {"title": "One", "artist": "Artist A"},
+      ])
+_spotify_ld = ('<script type="application/ld+json">'
+               + __import__("json").dumps({
+                   "description": "Playlist · Top Hits 2026 · 198 items · 2 saves"})
+               + '</script>')
+check("spotify extractor detects playlists beyond the public 100-item window",
+      _spotify_total_from_html(_spotify_ld) == 198)
+
+_deezer_name, _deezer_tracks, _deezer_next = _deezer_playlist_from_obj({
+    "title": "My Deezer Mix",
+    "tracks": {"data": [
+        {"title": "First", "artist": {"name": "Primary"},
+         "contributors": [{"name": "Primary"}, {"name": "Guest"}]},
+        {"title": "Again", "artist": {"name": "Primary"}},
+    ], "next": "https://api.deezer.com/next"},
+})
+check("deezer extractor keeps order, contributors and pagination",
+      _deezer_name == "My Deezer Mix"
+      and _deezer_tracks == [
+          {"title": "First", "artist": "Primary, Guest"},
+          {"title": "Again", "artist": "Primary"},
+      ] and _deezer_next.endswith("/next"))
 
 # State dedup
 import tempfile
@@ -332,6 +380,23 @@ check("matching: automatic mode rejects tied editions",
                          [{"url": "a", "title": "Song", "artist": "Artist"},
                           {"url": "b", "title": "Song", "artist": "Artist"}],
                          min_score=5.5, min_margin=0.25) is None)
+check("matching: automatic mode rejects a secondary-artist cover",
+      matching.pick_best(
+          "Red Hot Chili Peppers - Under the Bridge",
+          [{"url": "cover", "title": "Under The Bridge",
+            "artist": "Rhythms Del Mundo, Red Hot Chili Peppers"}],
+          min_score=5.5, min_margin=0.25) is None)
+check("matching: automatic mode rejects an unrequested sped-up version",
+      matching.pick_best(
+          "Manu Chao - Bongo Bong",
+          [{"url": "sped", "title": "Bongo Bong - Sped Up (Manu Chao)",
+            "artist": "Manu Chao, spedup trends"}],
+          min_score=5.5, min_margin=0.25) is None)
+check("matching: automatic mode accepts a matching primary artist",
+      matching.pick_best(
+          "La Fine Equipe, Saneyes - Lying With You",
+          [{"url": "right", "title": "Lying With You", "artist": "La Fine Equipe"}],
+          min_score=5.5, min_margin=0.25) == "right")
 
 # resolver query variants (specific -> loose) + artist-gated broadening
 from lucidadl.downloader import _query_variants as _qv
@@ -398,7 +463,7 @@ check("require_artist returns None when no artist matches (no wrong download)",
       matching.pick_best("Sinyo' - Enfant Perdu", _only_wrong, require_artist=True) is None)
 check("require_artist off -> legacy best-anyway behavior",
       matching.pick_best("Sinyo' - Enfant Perdu", _only_wrong) == "w")
-check("artist_matches token overlap",
+check("artist_matches checks the primary artist",
       matching.artist_matches("Sinyo' - Enfant Perdu", {"artist": "Sinyo"}) is True
       and matching.artist_matches("Sinyo' - Enfant Perdu", {"artist": "Other"}) is False)
 
@@ -602,6 +667,22 @@ with _patch.object(_cli, "lucida_context") as _playlist_browser:
 check("playlist: unsupported links fail before opening a browser",
       not _unsupported_ok and not _playlist_browser.called)
 
+_remote_list = _os.path.join(tempfile.gettempdir(), "lucidadl_remote_playlist.txt")
+with _patch.object(_cli.api, "public_playlist_tracklist", _AsyncMock(return_value=(
+        "Public Mix", [{"artist": "Artist", "title": "Song"}]))), \
+     _patch.object(_cli, "PLAYLIST_TEXT_PATH", _remote_list), \
+     _patch.object(_cli, "lucida_context") as _remote_browser:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _remote_ok = _aio.run(_cli._playlist(
+            "https://open.spotify.com/playlist/abc", True, "qobuz", None,
+            "original", tempfile.gettempdir(), False, 3))
+check("playlist: Spotify dry-run does not launch a browser",
+      _remote_ok and not _remote_browser.called and _os.path.exists(_remote_list))
+try:
+    _os.remove(_remote_list)
+except OSError:
+    pass
+
 check("playlist: failures before download retain recovery context",
       _cli._failed_result(
           ["Artist - One", "Artist - Two"], "track", "My Mix", ["01", "02"]
@@ -632,7 +713,7 @@ _help = _runner.invoke(_cli.cli, ["--help"])
 check("cli: developer debug command is hidden", "  debug " not in _help.output)
 _version = _runner.invoke(_cli.cli, ["--version"])
 check("cli: source version matches release metadata",
-      _version.exit_code == 0 and "1.2.0" in _version.output)
+      _version.exit_code == 0 and "1.3.0" in _version.output)
 
 print()
 if fails:

@@ -32,8 +32,8 @@ python selftest.py        # prints "ALL OFFLINE TESTS PASSED"
 CI runs the same self-tests on Linux and Windows for Python 3.10–3.12, plus a packaging
 check (`python -m build` + `twine check`).
 
-For playlist changes, also run a public Apple Music `--dry-run`; use `--check` when the
-matching path changed. Neither command writes audio files.
+For playlist changes, also run `--dry-run` with the affected public source; use `--check`
+when the matching path changed. Neither command writes audio files.
 
 ### What can't be tested automatically
 

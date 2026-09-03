@@ -9,13 +9,14 @@ Flow (all httpx, like the Rust jelni client):
   start_download(track)   -> POST /api/load -> {handoff, server}
   run_job(handoff,server) -> poll <server>.lucida.to (Cloudflare-free) -> stream file
 
-Apple Music playlist scraping (applemusic_tracklist) DOES need a page — it's not a
-lucida service — so it's a module function taking a Playwright page.
+Public Spotify and Deezer playlist metadata is read directly over HTTP. Apple Music
+still needs a Playwright page because its public track list is rendered dynamically.
 """
 
 from __future__ import annotations
 
 import asyncio
+import html as html_lib
 import json
 import os
 import re
@@ -37,6 +38,11 @@ SERVICE_ALIASES = {"amazon_music": "amazon", "yandex_music": "yandex"}
 COUNTRY_DEFAULTS = {"qobuz": "US", "amazon": "", "deezer": "FR"}
 # Services tried (in order) when the primary one finds nothing (unless --strict).
 FALLBACK_SERVICES = ["qobuz", "amazon"]
+PLAYLIST_SOURCE_NAMES = {
+    "apple": "Apple Music",
+    "spotify": "Spotify",
+    "deezer": "Deezer",
+}
 
 # Values of the #convert <select> (also the lucida downscale strings).
 DOWNSCALE_CHOICES = ["original", "flac", "mp3", "ogg-vorbis", "opus", "m4a-aac", "wav"]
@@ -69,12 +75,35 @@ def default_country(service: str) -> str:
     return COUNTRY_DEFAULTS.get(normalize_service(service), "US")
 
 
-def is_apple_playlist_url(url: str) -> bool:
+def playlist_source(url: str) -> str:
+    """Return the supported public-playlist source identified by its canonical URL."""
     parsed = urlparse((url or "").strip())
     host = (parsed.hostname or "").lower()
     parts = [part.lower() for part in parsed.path.split("/") if part]
-    return ((host == "music.apple.com" or host.endswith(".music.apple.com")) and
-            "playlist" in parts)
+    if ((host == "music.apple.com" or host.endswith(".music.apple.com")) and
+            "playlist" in parts):
+        return "apple"
+    if host in ("open.spotify.com", "spotify.com", "www.spotify.com") and "playlist" in parts:
+        return "spotify"
+    if host in ("deezer.com", "www.deezer.com") and "playlist" in parts:
+        return "deezer"
+    return ""
+
+
+def playlist_source_name(source: str) -> str:
+    return PLAYLIST_SOURCE_NAMES.get(source, source or "unknown source")
+
+
+def is_apple_playlist_url(url: str) -> bool:
+    return playlist_source(url) == "apple"
+
+
+def _playlist_id(url: str) -> str:
+    parts = [part for part in urlparse((url or "").strip()).path.split("/") if part]
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() == "playlist":
+            return parts[index + 1]
+    return ""
 
 
 class LucidaClient:
@@ -402,6 +431,153 @@ def _find_results_node(obj: Any, depth: int = 0) -> Optional[Dict[str, Any]]:
             if r:
                 return r
     return None
+
+
+# --- public playlist sources ------------------------------------------------
+
+async def _public_get(url: str):
+    """Fetch a public playlist page/API with the same small retry policy as lucida."""
+    import httpx
+
+    headers = {
+        # Spotify's public SEO response includes the declared playlist size for this
+        # neutral browser UA; a detailed Chrome UA receives only the web-app shell.
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.8",
+    }
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30.0) as client:
+        for attempt in range(3):
+            try:
+                response = await client.get(url)
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+                continue
+            if response.status_code == 429 or response.status_code in (500, 502, 503, 504):
+                if attempt < 2:
+                    await asyncio.sleep(_retry_delay(response, attempt))
+                    continue
+            response.raise_for_status()
+            return response
+    raise LucidaError("public playlist request failed after retrying")
+
+
+def _spotify_playlist_from_html(raw: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Parse the stable JSON payload shipped with Spotify's public embed player."""
+    match = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        raw or "", re.I | re.S,
+    )
+    if not match:
+        raise LucidaError("Spotify's public playlist data was not found (page format changed?)")
+    try:
+        data = json.loads(html_lib.unescape(match.group(1)))
+        entity = data["props"]["pageProps"]["state"]["data"]["entity"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LucidaError(f"Spotify playlist data could not be read: {exc}") from exc
+    if not isinstance(entity, dict) or str(entity.get("type") or "").lower() != "playlist":
+        raise LucidaError("Spotify did not return a public playlist")
+    name = " ".join(str(entity.get("name") or entity.get("title") or "").split())
+    tracks: List[Dict[str, str]] = []
+    for item in entity.get("trackList") or []:
+        if not isinstance(item, dict) or item.get("entityType") not in (None, "track"):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        artist = " ".join(str(item.get("subtitle") or "").replace("\xa0", " ").split())
+        if title and artist:
+            tracks.append({"title": title, "artist": artist})
+    return name, tracks
+
+
+def _spotify_total_from_html(raw: str) -> Optional[int]:
+    """Read the public page's declared item count, used to detect the embed's 100 cap."""
+    for match in re.finditer(
+            r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+            raw or "", re.I | re.S):
+        try:
+            data = json.loads(html_lib.unescape(match.group(1)))
+        except (TypeError, ValueError):
+            continue
+        description = str(data.get("description") or "") if isinstance(data, dict) else ""
+        count = re.search(r"\b(\d[\d ,.]*)\s+(?:items?|songs?|tracks?)\b",
+                          description, re.I)
+        if count:
+            digits = re.sub(r"\D", "", count.group(1))
+            if digits:
+                return int(digits)
+    return None
+
+
+async def spotify_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    playlist_id = _playlist_id(url)
+    if not playlist_id:
+        raise LucidaError("Spotify playlist ID not found in the URL")
+    embed_url = f"https://open.spotify.com/embed/playlist/{playlist_id}"
+    response = await _public_get(embed_url)
+    name, tracks = _spotify_playlist_from_html(response.text)
+    if len(tracks) == 100:
+        public = await _public_get(f"https://open.spotify.com/playlist/{playlist_id}")
+        total = _spotify_total_from_html(public.text)
+        if total and total > len(tracks):
+            raise LucidaError(
+                f"Spotify exposes only the first 100 of {total} titles publicly. "
+                "Export the complete playlist to a text file, then use `playlist-file`."
+            )
+        if total is None:
+            log("  Spotify returned 100 titles; a longer public playlist may be truncated")
+    return name, tracks
+
+
+def _deezer_playlist_from_obj(data: Any) -> Tuple[str, List[Dict[str, str]], str]:
+    if not isinstance(data, dict):
+        raise LucidaError("Deezer returned unreadable playlist data")
+    if isinstance(data.get("error"), dict):
+        message = data["error"].get("message") or "playlist unavailable"
+        raise LucidaError(f"Deezer: {message}")
+    name = " ".join(str(data.get("title") or "").split())
+    block = data.get("tracks") if isinstance(data.get("tracks"), dict) else data
+    rows = block.get("data") if isinstance(block, dict) else []
+    tracks: List[Dict[str, str]] = []
+    for item in rows or []:
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or item.get("title_short") or "").split())
+        contributors = (item.get("contributors")
+                        if isinstance(item.get("contributors"), list) else [])
+        artists = [str(artist.get("name") or "").strip() for artist in contributors
+                   if isinstance(artist, dict) and artist.get("name")]
+        primary = item.get("artist") if isinstance(item.get("artist"), dict) else {}
+        artist = ", ".join(dict.fromkeys(artists)) or str(primary.get("name") or "").strip()
+        if title and artist:
+            tracks.append({"title": title, "artist": artist})
+    return name, tracks, str(block.get("next") or "") if isinstance(block, dict) else ""
+
+
+async def deezer_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    playlist_id = _playlist_id(url)
+    if not playlist_id:
+        raise LucidaError("Deezer playlist ID not found in the URL")
+    response = await _public_get(f"https://api.deezer.com/playlist/{playlist_id}")
+    name, tracks, next_url = _deezer_playlist_from_obj(response.json())
+    pages = 1
+    while next_url and pages < 100:
+        response = await _public_get(next_url)
+        _, more, next_url = _deezer_playlist_from_obj(response.json())
+        tracks.extend(more)
+        pages += 1
+    if next_url:
+        log("  Deezer pagination stopped after 100 pages")
+    return name, tracks
+
+
+async def public_playlist_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    source = playlist_source(url)
+    if source == "spotify":
+        return await spotify_tracklist(url, log)
+    if source == "deezer":
+        return await deezer_tracklist(url, log)
+    raise LucidaError("This public playlist source is not supported by the HTTP importer")
 
 
 # --- Apple Music playlist scraping (needs a Playwright page) ----------------
