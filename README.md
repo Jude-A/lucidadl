@@ -2,275 +2,256 @@
 
 [![PyPI](https://img.shields.io/pypi/v/lucidadl.svg)](https://pypi.org/project/lucidadl/)
 [![CI](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml/badge.svg)](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python versions](https://img.shields.io/pypi/pyversions/lucidadl.svg)](https://pypi.org/project/lucidadl/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Fast, parallel command-line music downloader for [lucida.to](https://lucida.to) — fetch
-tracks, albums and playlists from **Qobuz** and **Amazon Music** in lossless **FLAC** (or
-transcode to MP3 / AAC / Opus), neatly organized by tags. Like `yt-dlp`, but for lucida —
-with an interactive terminal UI on top.
+A small, fast music downloader for [lucida.to](https://lucida.to), with both direct
+commands and an interactive terminal interface.
 
-**A vibe-coded project.** lucidadl was built quickly and AI-assisted ("vibe coding"). It
-wraps and automates downloading from [lucida.to](https://lucida.to) — inspired by two
-existing open-source lucida downloaders we looked at (see [Credits](#credits)) and adding
-the features I wanted on top: parallel downloads, local transcoding, tag-based
-organization, playlist import, existence-aware dedup, and an interactive menu.
+lucidadl downloads tracks and albums in parallel, organizes them from their metadata,
+can convert them locally with ffmpeg, accepts large `.txt` batches, and imports public
+Apple Music playlists. It intentionally remains a lightweight personal tool rather than
+a music-library platform.
 
-> **Disclaimer.** This is a personal-use tool, similar in spirit to `yt-dlp`. You are
-> responsible for complying with the terms of service of lucida.to and of the source
-> services, and with the copyright law of your jurisdiction. The authors are not
-> affiliated with lucida.to or any streaming service. Use it for content you are
-> entitled to download.
+> Use lucidadl only for content you are entitled to download. You are responsible for
+> complying with applicable law and with the terms of the services involved. This
+> project is not affiliated with lucida.to, Apple, Qobuz, Amazon, or any streaming
+> service.
 
-## Features
+## Highlights
 
-- **Search or URL** — `track "artist - title"`, `album "artist - album"`, or paste a
-  Qobuz/Amazon URL.
-- **Parallel downloads** over HTTP (`--jobs N`) — no browser kept open, low RAM.
-- **Albums = track by track**, expanded and downloaded in parallel (faster than the
-  native album zip).
-- **Local transcoding** with ffmpeg (`--to mp3 --bitrate 320k`) — bundled, nothing to
-  install. Tags and cover art preserved.
-- **Tag-based organization** into `Artists/<Artist>/<Album>/…` (falls back to the
-  source's artist/album metadata when a file has no embedded tags, so nothing lands in
-  "Unknown"); playlists go under `Playlists/<name>/`, kept separate from artists.
-- **Watchlists** with dedup (`tracks` / `albums` read a file, skip what's done — but a
-  file you deleted is re-downloaded; `--force` ignores the memory entirely).
-- **Playlist import** — paste a playlist link and get every track via lucida. Apple
-  Music is wired up today; adding more sources is easy (PRs welcome).
-- **Interactive search**, **service fallback** (Qobuz → Amazon), **retry** of failures.
-- **Interactive menu** (`lucida ui`, or just `lucida`) and **live progress bars** — one
-  bar per parallel download, in any real terminal.
-
-## Demo
-
-Run `lucida` with no arguments for the interactive menu:
-
-```text
-lucidadl  ·  8 concurrent downloads · qobuz · → flac
-~/Downloads/music
-
-► What do you want to do?  (↑/↓, Enter)
-  🎵  Download a track
-  💿  Download an album
-  🅰️   Import an Apple Music playlist
-  🔎  Interactive search
-  📜  Watchlists (tracks / albums)
-  ⚙   Settings
-  🚪  Quit
-```
-
-…or go straight to a command and watch one progress bar per parallel download:
-
-```text
-$ lucida album "Red Hot Chili Peppers - Californication" --to flac -j 8
-
-  ✓ Californication/Around the World.flac   (29.1 MB)
-  ✓ Californication/Otherside.flac          (27.6 MB)
-  Scar Tissue            ━━━━━━━━━━━━━━━━╸━━━━━   68%  ·  3.9 MB/s
-  Get on Top             ━━━━━━━╸━━━━━━━━━━━━━━   31%  ·  4.2 MB/s
-  Around the World       ━━━━━━━━━━━━━━━━━━━━━━  100%
-  Done — OK:15  skipped:0  failed:0
-  → Files in ~/Downloads/music · log: …/run.log
-```
-
-## How it works (Cloudflare)
-
-lucida.to is behind Cloudflare and plain HTTP gets a `403`. lucidadl solves the
-challenge **once** in a real browser (`setup`), caches the `cf_clearance` cookie, then
-runs **everything else over `httpx`** — no browser stays open. The browser is only
-re-opened briefly if the cookie expires. Solving the challenge needs a logged-in
-desktop session (it can't run on a locked/headless server).
-
-## Requirements
-
-- Python **3.10+**
-- A desktop session for the one-time Cloudflare `setup` (Windows/macOS/Linux).
+- Track and album downloads from a search (`Artist - Title`) or a direct URL.
+- Parallel HTTP downloads with no browser left running in the background.
+- Qobuz search by default, with an automatic Amazon fallback.
+- FLAC source downloads and optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion.
+- Tag-based organization under `Artists/<Artist>/<Album>/`.
+- Batch downloads from any `.txt` file, without modifying the source list.
+- Public Apple Music playlist import with ordered tracks and a portable `.m3u8` file.
+- Existence-aware deduplication, safe matching, and one-command retry for failures.
+- Guided first-run setup, diagnostics, progress bars, and a compact interactive menu.
 
 ## Install
 
-`lucidadl` is on [PyPI](https://pypi.org/project/lucidadl/); installing it adds a global
-**`lucida`** command (alias: `lucidadl`).
-
-> **Already using [lucida-downloader](https://github.com/jelni/lucida-downloader)?** Its
-> binary is also called `lucida`, so the two clash on your `PATH`. Just use the
-> **`lucidadl`** alias for this tool (e.g. `lucidadl track "…"`, `lucidadl ui`) — every
-> command below works the same with `lucidadl` in place of `lucida`.
-
-**Recommended — isolated, on PATH ([pipx](https://pipx.pypa.io)):**
+Python 3.10 or newer and a normal desktop session are required. Using
+[pipx](https://pipx.pypa.io) keeps the application isolated and available everywhere:
 
 ```bash
-pip install --user pipx && python -m pipx ensurepath   # once, if you don't have pipx
 pipx install lucidadl
-pipx run playwright install chromium                    # one-time: download the browser
+lucida setup
+lucida
 ```
 
-**Or with plain pip** (into your Python; its `Scripts`/`bin` must be on PATH):
+`lucida setup` installs the matching Playwright Chromium build when needed, opens
+lucida.to once for the Cloudflare check, then saves the resulting access locally.
+
+Plain pip also works:
 
 ```bash
 pip install lucidadl
-playwright install chromium
+lucida setup
 ```
 
-**From source** (for development — see [CONTRIBUTING.md](CONTRIBUTING.md)):
+Installing the package creates both `lucida` and `lucidadl`. If another application
+already owns the `lucida` command, use the `lucidadl` alias for every example below.
+
+## Three ways to download
+
+### 1. A track or album
+
+```bash
+lucida track "Daft Punk - Around the World"
+lucida album "Daft Punk - Discovery"
+```
+
+A direct Qobuz or Amazon URL can be used in place of the search text. Albums are
+expanded and downloaded track by track so the available parallelism is preserved.
+
+Use interactive search when you want to choose the result yourself:
+
+```bash
+lucida search "Discovery Daft Punk"
+```
+
+### 2. Many tracks or albums from a text file
+
+```bash
+lucida tracks --file "D:/music-lists/tracks.txt"
+lucida albums --file "D:/music-lists/albums.txt"
+```
+
+The format is deliberately simple: one search or direct URL per line. Blank lines and
+comments beginning with `#` are ignored.
+
+```text
+# Road-trip additions
+Daft Punk - Around the World
+The Chemical Brothers - Galvanize
+https://play.qobuz.com/track/24107150
+```
+
+The source file is never edited. Already downloaded items are skipped unless `--force`
+is used. When `--file` is omitted, the plural commands use `./inputs/tracks.txt` or
+`./inputs/albums.txt`; ready-to-copy examples are included in the repository.
+
+### 3. A public Apple Music playlist
+
+```bash
+lucida playlist "https://music.apple.com/.../pl.xxxxxxxx"
+```
+
+lucidadl reads the public Apple Music page, resolves each track through lucida.to, and
+stores the result under `Playlists/<playlist name>/`. An `.m3u8` file is written beside
+the tracks so players and devices recognize the folder as an actual playlist.
+
+Preview the extraction without downloading anything:
+
+```bash
+lucida playlist "https://music.apple.com/.../pl.xxxxxxxx" --dry-run
+```
+
+Apple Music is currently the only supported playlist source.
+
+## Interactive menu
+
+Run `lucida` without arguments (or `lucida ui`):
+
+```text
+╭────────────────── lucidadl ──────────────────╮
+│ 3 concurrent downloads · qobuz · original    │
+│ Music: ~/Downloads/music                     │
+│ Access: prepared                             │
+╰──────────────────────────────────────────────╯
+
+► What do you want to do?
+  ⬇   Download music
+  🎶  Import an Apple Music playlist
+  📄  Download from a .txt file
+  ⚙   Settings
+  🧰  Help, access and diagnostics
+  🚪  Quit
+```
+
+The menu remembers its download count, source service, conversion settings, and music
+folder. Each run ends with a readable summary and offers failed items for retry from the
+main menu.
+
+## Output and formats
+
+Music is saved to `~/Downloads/music` by default, independently of the directory from
+which lucidadl is launched:
+
+```text
+music/
+├── Artists/
+│   └── Artist/
+│       └── Album/
+└── Playlists/
+    └── Playlist name/
+        ├── 01 - Track.flac
+        └── Playlist name.m3u8
+```
+
+Change the main folder permanently or for one run:
+
+```bash
+lucida config --music "D:/Music"
+lucida track "Artist - Title" --out "E:/Temporary music"
+```
+
+For local conversion, lucidadl downloads the best source first and invokes the bundled
+ffmpeg executable:
+
+```bash
+lucida album "Artist - Album" --to mp3 --bitrate 320k --jobs 8
+```
+
+If conversion fails, the source audio is kept and the item is reported as failed rather
+than silently counted as a success.
+
+Useful download options:
+
+| Option | Purpose |
+|---|---|
+| `-j, --jobs N` | Parallel downloads, from 1 to 100 (default: 3) |
+| `-s, --service` | Primary search service: `qobuz` or `amazon` |
+| `--to FORMAT` | Local conversion to MP3, AAC/M4A, Opus, Ogg, FLAC, or WAV |
+| `--bitrate RATE` | Conversion bitrate such as `320k` or `192k` |
+| `--keep-original` | Keep the source FLAC after conversion |
+| `--flat` | Place files under `Music/` instead of organizing from tags |
+| `--force` | Ignore download history and fetch the item again |
+| `--hidden` | Move a necessary Cloudflare browser window off-screen |
+
+Run `lucida <command> --help` for the complete options of a command.
+
+## Access, failures, and diagnostics
+
+Cloudflare access is prepared once in a real Chromium window. Downloads then use a
+lightweight HTTP client. If the saved access expires, lucidadl briefly opens the browser
+again and refreshes it.
+
+```bash
+lucida doctor          # quick local check; never opens a browser
+lucida doctor --live   # browser and lucida.to connectivity check
+lucida setup           # install/repair Chromium and refresh access
+lucida retry           # retry only unresolved items from the previous run
+```
+
+Failed tracks and albums retain their original type. Automated and scheduled commands
+return a non-zero status while work remains unresolved. The latest details are stored in
+`run.log`; `lucida config` prints its exact location along with all other application
+paths.
+
+Common fixes:
+
+- No confident automatic match: use `lucida search` and choose the result manually.
+- Cloudflare or browser failure: run `lucida setup`, then `lucida doctor --live`.
+- Unexpected output folder: run `lucida config` and check `LUCIDADL_MUSIC`.
+- Another program uses the `lucida` command: call this application with `lucidadl`.
+
+## Scheduling a batch
+
+Once access has been prepared, a `.txt` batch can run unattended while its cached access
+remains valid. A Windows Scheduled Task helper is included:
+
+```powershell
+.\schedule.ps1 -Mode tracks -Time 21:30 -WorkingDir "D:\music-lists"
+```
+
+The scheduled task uses `inputs/tracks.txt` or `inputs/albums.txt` under its working
+directory. A logged-in desktop session is still required if Cloudflare access must be
+renewed.
+
+## Application data
+
+The browser profile, access data, configuration, deduplication state, last log, and
+failed-item list are stored outside the repository:
+
+- Windows: `%LOCALAPPDATA%\lucidadl`
+- Linux: `~/.local/share/lucidadl`
+- macOS: `~/Library/Application Support/lucidadl`
+
+Advanced overrides are available through `LUCIDADL_HOME` and `LUCIDADL_MUSIC`.
+
+## Development
 
 ```bash
 git clone https://github.com/Jude-A/lucidadl
 cd lucidadl
+python -m venv .venv
 pip install -e ".[dev]"
-playwright install chromium
+python selftest.py
 ```
 
-Open a new terminal afterwards so `lucida` is picked up. ffmpeg is bundled
-(`imageio-ffmpeg`) — nothing to install.
-
-## Quick start
-
-```bash
-lucida setup                                  # once: pass Cloudflare, cache the cookie
-lucida                                         # interactive menu (same as `lucida ui`)
-lucida track "Red Hot Chili Peppers - Otherside"
-lucida album "Red Hot Chili Peppers - Californication" --to mp3 --bitrate 320k -j 8
-```
-
-Prefer a menu? Run `lucida` with no arguments (or `lucida ui`): pick an action, type a
-query/URL, and watch one progress bar per parallel download. Your menu defaults
-(jobs, service, format, folder) are remembered.
-
-Files land in **one fixed folder** — `~/Downloads/music` by default (not the current
-directory, so they never scatter). Change it once with `lucida config --music "D:/Music"`
-(or the `LUCIDADL_MUSIC` env var), or per run with `-o`.
-
-## Commands
-
-Singular = ad-hoc (arguments, always downloads). Plural = watchlist (reads a file,
-skips already-downloaded items — for unattended/scheduled runs).
-
-| Command | Input | Dedup |
-|---------|-------|-------|
-| `lucida` / `lucida ui` | interactive menu | — |
-| `lucida track "<query\|url>"` | argument(s) | no (force) |
-| `lucida album "<query\|url>"` | argument(s) | no (force) |
-| `lucida tracks` | `./inputs/tracks.txt` | yes |
-| `lucida albums` | `./inputs/albums.txt` | yes |
-| `lucida playlist "<apple music url>"` | public playlist | yes |
-| `lucida search "<query>"` | interactive pick | no |
-| `lucida retry` | failed list | yes |
-| `lucida config` | show/set the music folder | — |
-| `lucida setup` | — | — |
-| `lucida doctor` | environment check | — |
-
-A search takes the best-matching result (title + artist, avoiding remix/cover/karaoke/
-live/… unless you ask for them). A playlist/album URL downloads all its tracks.
-
-## Options (download commands)
-
-- `-j, --jobs N` — parallel downloads, 1–100 (default 3).
-- `-s, --service` — `qobuz` (default) or `amazon`. If the primary finds nothing, it
-  falls back to the other automatically.
-- `-F, --format` — format requested from lucida (server-side, no bitrate control):
-  `original` (default) · `flac` · `mp3` · `ogg-vorbis` · `opus` · `m4a-aac` · `wav`.
-- `--to` — **local ffmpeg transcode** (recommended for a precise format/bitrate):
-  `mp3` · `aac`/`m4a` · `opus` · `ogg` · `flac` · `wav`. Downloads FLAC then converts.
-- `--bitrate` — e.g. `320k`, `256k`, `192k` (for `--to`).
-- `--keep-original` — keep the source FLAC next to the transcoded file.
-- `--force` — ignore the dedup memory and re-download even items already recorded as
-  done (handy if `state.json` drifted out of sync).
-- `--organize / --flat` — tag-based `Artists/<Artist>/<Album>/` (default) vs everything
-  flat in `<music folder>/Music/`.
-- `--country` — country code (default `US` for Qobuz; Amazon needs none).
-- `-o, --out` — output directory for this run (default: the configured music folder,
-  `~/Downloads/music`).
-- `--hidden / --visible` — if a Cloudflare refresh is needed, open the window
-  off-screen (`--hidden`) instead of visible.
-
-## Watchlists
-
-Copy the example files and edit them — one item per line (a search `artist - title`,
-or a direct URL):
-
-```bash
-cp inputs/tracks.txt.example inputs/tracks.txt
-cp inputs/albums.txt.example inputs/albums.txt
-```
-
-then:
-
-```bash
-lucida tracks      # downloads everything new, skips what's already done
-lucida albums
-```
-
-## Playlists
-
-```bash
-lucida playlist "https://music.apple.com/.../pl.xxxxxxxx" [--dry-run] [-j N]
-```
-
-Give it a playlist link: lucidadl reads the track list (title + artist) straight from the
-page, then downloads each track through lucida (Qobuz) into `Playlists/<playlist name>/`.
-`--dry-run` just lists them (and writes `./inputs/playlist.txt`) without downloading.
-
-**Only Apple Music is implemented today — that's what I use.** Adding other sources
-(Spotify, Deezer, Tidal…) is straightforward, and contributions are welcome. The playlist
-scraping all lives in [`lucidadl/api.py`](lucidadl/api.py):
-
-- `playlist_tracklist()` — picks a scraper based on the link's host.
-- `applemusic_tracklist()` — the working Apple Music scraper (your reference example).
-- `_scrape_playlist()` + `_PLAYLIST_SOURCES` — a generic scraper with per-site CSS
-  selectors (best-guess starting points for Spotify/Deezer/Tidal), gated behind the
-  `_PLAYLIST_OTHERS_ENABLED` flag.
-
-To add a source: flip `_PLAYLIST_OTHERS_ENABLED = True`, fix the selectors for your
-service in `_PLAYLIST_SOURCES`, test, and open a PR.
-
-## Scheduling / "in the background"
-
-The cookie is cached, so unattended runs open no browser (until it expires). Schedule a
-watchlist with your OS scheduler. A Windows example is provided in `schedule.ps1`.
-
-## Where files live
-
-- **Music**: one fixed folder, `~/Downloads/music` by default. Set it with
-  `lucida config --music "<path>"` or the `LUCIDADL_MUSIC` env var; `lucida config`
-  (no args) prints every path. Everything is saved here and deduped against here only.
-- **App data** (browser profile, `clearance.json`, dedup `state.json`, `config.json`,
-  `run.log`, `failed.txt`): the OS user data dir (`%LOCALAPPDATA%\lucidadl` on Windows,
-  `~/.local/share/lucidadl` on Linux, `~/Library/Application Support/lucidadl` on
-  macOS). Override with `LUCIDADL_HOME`.
-- **Watchlist inputs** (`tracks.txt`, `albums.txt`): `./inputs/` next to where you run
-  the command, so you can keep them in your project. Override per command with `-f`.
-
-## Troubleshooting
-
-- **Everything lands in `Unknown Artist/Unknown Album`** → `mutagen` is missing in the
-  Python that runs `lucida` (tags can't be read). `pip install mutagen` into that
-  interpreter (it's a declared dependency, so a normal `pip install .`/`pipx` install
-  pulls it). lucidadl now prints a warning when it's absent.
-- **"Cloudflare not cleared"** → run `lucida setup` again (the cached cookie expired).
-- **"Executable doesn't exist"** → run `playwright install chromium`.
-- **Search finds nothing** → try a direct URL, or `-s amazon`.
-- **`lucida doctor`** → checks Python, Playwright, and reachability.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for platform-specific setup and validation.
+Release changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Credits
 
-lucidadl takes inspiration from two existing open-source lucida.to downloaders we looked
-at while building it:
-
-- **[lucida-flow](https://github.com/ryanlong1004/lucida-flow)** — a Python CLI/API that
-  drives lucida.to through browser automation; the starting point for the browser side.
-- **[lucida-downloader](https://github.com/jelni/lucida-downloader)** — a fast,
-  multithreaded Rust client; the inspiration for downloading many tracks concurrently.
-
-It's a "vibe-coded" project (built quickly, AI-assisted), so expect rough edges — issues
-and PRs that sharpen or extend it are very welcome.
-
-## Contributing
-
-Bug reports and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup
-and how to run the offline self-tests. Notable changes are tracked in
-[CHANGELOG.md](CHANGELOG.md).
+lucidadl takes inspiration from
+[lucida-flow](https://github.com/ryanlong1004/lucida-flow) and
+[lucida-downloader](https://github.com/jelni/lucida-downloader). The project started as
+a small, AI-assisted personal tool and remains intentionally focused on that scale.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)

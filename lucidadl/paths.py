@@ -111,5 +111,5 @@ def set_music_dir(path: str) -> str:
 
 
 def cwd(name: str) -> str:
-    """A path in the current working directory (e.g. watchlist inputs)."""
+    """A path in the current working directory (e.g. default batch inputs)."""
     return os.path.join(os.getcwd(), name)

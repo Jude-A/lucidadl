@@ -9,8 +9,10 @@ ride the same Cloudflare clearance.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Tuple
@@ -39,6 +41,26 @@ _CHALLENGE_BODY = (
 
 class BrowserClosed(RuntimeError):
     """The browser window/context closed unexpectedly."""
+
+
+async def chromium_installed() -> bool:
+    """Return whether Playwright's matching Chromium build is available."""
+    try:
+        async with async_playwright() as pw:
+            return os.path.exists(pw.chromium.executable_path)
+    except Exception:
+        return False
+
+
+async def install_chromium() -> bool:
+    """Install Chromium into the current Python/pipx environment."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "playwright", "install", "chromium"
+        )
+        return await proc.wait() == 0
+    except Exception:
+        return False
 
 
 def _title_is_challenge(title: str) -> bool:

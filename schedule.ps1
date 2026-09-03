@@ -1,7 +1,7 @@
 <#
   Schedule lucidadl to run "in the background" on Windows.
 
-  Registers a Windows Scheduled Task that runs a watchlist (`lucida albums` or
+  Registers a Windows Scheduled Task that runs a batch file (`lucida albums` or
   `lucida tracks`) every day at a given time.
 
   IMPORTANT: the task runs only "when the user is logged on" (Interactive logon),
@@ -22,7 +22,7 @@ param(
   [string]$WorkingDir = (Get-Location).Path
 )
 
-# The watchlist (`tracks`/`albums`) reads .\inputs\<mode>.txt relative to the working
+# The batch command (`tracks`/`albums`) reads .\inputs\<mode>.txt relative to the working
 # directory, so point the task at a folder that contains your inputs\ folder.
 $lucida = (Get-Command lucida -ErrorAction SilentlyContinue).Source
 if (-not $lucida) {
