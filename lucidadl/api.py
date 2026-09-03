@@ -16,10 +16,12 @@ lucida service — so it's a module function taking a Playwright page.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from . import paths, utils
 
@@ -50,6 +52,14 @@ class LucidaError(RuntimeError):
     pass
 
 
+def _retry_delay(response, attempt: int) -> int:
+    """Small bounded backoff, honoring Retry-After when a server supplies it."""
+    try:
+        return min(30, max(1, int(response.headers.get("Retry-After", ""))))
+    except (TypeError, ValueError):
+        return min(8, 2 ** attempt)
+
+
 def normalize_service(service: str) -> str:
     s = (service or "").lower()
     return SERVICE_ALIASES.get(s, s)
@@ -57,6 +67,14 @@ def normalize_service(service: str) -> str:
 
 def default_country(service: str) -> str:
     return COUNTRY_DEFAULTS.get(normalize_service(service), "US")
+
+
+def is_apple_playlist_url(url: str) -> bool:
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").lower()
+    parts = [part.lower() for part in parsed.path.split("/") if part]
+    return ((host == "music.apple.com" or host.endswith(".music.apple.com")) and
+            "playlist" in parts)
 
 
 class LucidaClient:
@@ -128,11 +146,26 @@ class LucidaClient:
             return True
 
     async def _get(self, url: str, **kw):
-        """GET with one Cloudflare-refresh retry on 403."""
-        r = await self.http.get(url, **kw)
-        if r.status_code == 403 and await self._refresh_creds():
-            r = await self.http.get(url, **kw)
-        return r
+        """GET with one Cloudflare refresh and bounded transient retries."""
+        refreshed = False
+        for attempt in range(3):
+            try:
+                r = await self.http.get(url, **kw)
+            except Exception:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(2 ** attempt)
+                continue
+            if r.status_code == 403 and not refreshed:
+                refreshed = True
+                if await self._refresh_creds():
+                    continue
+            if r.status_code == 429 or r.status_code in (500, 502, 503, 504):
+                if attempt < 2:
+                    await asyncio.sleep(_retry_delay(r, attempt))
+                    continue
+            return r
+        raise LucidaError("GET failed after retrying")
 
     # -- search (httpx) ------------------------------------------------------
 
@@ -199,13 +232,23 @@ class LucidaClient:
                       "secondary": track.get("csrfFallback")},
             "upload": {"enabled": False}, "url": track["url"],
         }
+        last_error = "/api/load failed"
+        refreshed = False
         for attempt in range(5):
-            r = await self.http.post(LUCIDA + "/api/load", params={"url": STREAM_ACTION}, json=body)
-            if r.status_code == 403:
-                if not await self._refresh_creds():
+            try:
+                r = await self.http.post(
+                    LUCIDA + "/api/load", params={"url": STREAM_ACTION}, json=body)
+            except Exception as exc:
+                last_error = f"/api/load network error: {exc}"
+                if attempt == 4:
                     break
-                await asyncio.sleep(2)
+                await asyncio.sleep(min(8, 2 ** attempt))
                 continue
+            if r.status_code == 403 and not refreshed:
+                refreshed = True
+                if await self._refresh_creds():
+                    await asyncio.sleep(1)
+                    continue
             try:
                 j = r.json()
             except Exception:
@@ -213,9 +256,12 @@ class LucidaClient:
             if r.status_code == 200 and j.get("handoff") and j.get("server"):
                 return j["handoff"], j["server"]
             err = (j.get("error") if isinstance(j, dict) else None) or r.text[:150]
+            last_error = f"/api/load HTTP {r.status_code}: {err}"
             self.log(f"    /api/load ({r.status_code}): {err}")
-            await asyncio.sleep(5)
-        raise LucidaError("/api/load failed")
+            if r.status_code in (400, 401, 404, 422) or (r.status_code == 403 and refreshed):
+                break
+            await asyncio.sleep(_retry_delay(r, attempt))
+        raise LucidaError(last_error)
 
     async def run_job(self, handoff: str, server: str, dest_dir: str, base_name: str,
                       title: str = "", timeout: int = 1800,
@@ -225,9 +271,19 @@ class LucidaClient:
         last_msg = None
         last_state = None
         last_change = time.time()
+        transient_errors = 0
         while time.time() < deadline:
             s = await self.http.get(base)
-            if s.status_code in (404, 500):
+            if s.status_code == 429 or s.status_code in (500, 502, 503, 504):
+                transient_errors += 1
+                if transient_errors > 3:
+                    raise LucidaError(f"poll HTTP {s.status_code} after retrying")
+                if on_status:
+                    on_status(f"server HTTP {s.status_code} — retrying")
+                await asyncio.sleep(_retry_delay(s, transient_errors - 1))
+                continue
+            transient_errors = 0
+            if s.status_code == 404:
                 raise LucidaError(f"poll HTTP {s.status_code}")
             try:
                 st = s.json()
@@ -277,9 +333,11 @@ class LucidaClient:
                 with open(part, "wb") as f:
                     async for chunk in resp.aiter_bytes(1 << 16):
                         f.write(chunk)
+                        done += len(chunk)
                         if on_bytes:
-                            done += len(chunk)
                             on_bytes(done, total)
+                if total is not None and done != total:
+                    raise LucidaError(f"incomplete download ({done}/{total} bytes)")
                 os.replace(part, _long(dest))
             except BaseException as e:  # OSError, httpx errors, CancelledError…
                 self._claimed.discard(dest)  # free the name so a retry reuses it
@@ -348,14 +406,19 @@ def _find_results_node(obj: Any, depth: int = 0) -> Optional[Dict[str, Any]]:
 
 # --- Apple Music playlist scraping (needs a Playwright page) ----------------
 
-_APPLE_ROWS_JS = """() => Array.from(document.querySelectorAll('.songs-list-row')).map(r => {
-  const n = r.querySelector('.songs-list-row__song-name');
-  const b = r.querySelector('.songs-list-row__by-line');
-  return { title: n ? n.textContent : '', artist: b ? b.textContent : '' };
+_APPLE_ROWS_JS = """() => Array.from(document.querySelectorAll(
+  '[data-testid="track-list-item"], .songs-list-row'
+)).map(r => {
+  const n = r.querySelector('[data-testid="track-title"], .songs-list-row__song-name');
+  const b = r.querySelector('[data-testid="track-column-secondary"] a, '
+    + '[data-testid="track-title-by-line"] a, .songs-list-row__by-line a, '
+    + '.songs-list-row__by-line');
+  return { index: r.dataset.row || '', title: n ? n.textContent : '',
+    artist: b ? b.textContent : '' };
 })"""
 
 _APPLE_SCROLL_JS = """() => {
-  let el = document.querySelector('.songs-list-row');
+  let el = document.querySelector('[data-testid="track-list-item"], .songs-list-row');
   while (el) {
     const s = getComputedStyle(el);
     if (/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight + 10) break;
@@ -376,11 +439,18 @@ async def applemusic_tracklist(page, url: str, log=print):
     await page.wait_for_timeout(1500)
     await _dismiss_consent(page)
     try:
-        await page.wait_for_selector(".songs-list-row", timeout=30_000)
+        await page.wait_for_selector(
+            '[data-testid="track-list-item"], .songs-list-row', timeout=30_000
+        )
     except Exception:
         pass
 
     name = await _playlist_name(page)
+    structured_name, structured_tracks = await _apple_structured_playlist(page)
+    if structured_name and (not name or name.lower() in ("apple music", "playlist")):
+        name = structured_name
+    if structured_tracks:
+        log(f"    ✓ {len(structured_tracks)} titles found in Apple page data")
     tracks: List[Dict[str, str]] = []
     seen = set()
     stable = 0
@@ -395,7 +465,9 @@ async def applemusic_tracklist(page, url: str, log=print):
             artist = (t.get("artist") or "").strip()
             if not title:
                 continue
-            key = (artist.lower(), title.lower())
+            row_index = str(t.get("index") or "").strip()
+            key = (("row", row_index) if row_index else
+                   ("track", artist.casefold(), title.casefold()))
             if key not in seen:
                 seen.add(key)
                 tracks.append({"title": title, "artist": artist})
@@ -411,7 +483,63 @@ async def applemusic_tracklist(page, url: str, log=print):
         stable = stable + 1 if new == 0 else 0
         if (at_bottom and stable >= 3) or stable >= 30:
             break
+    # Apple has used both a complete JSON bootstrap and a virtualized visual list over
+    # time. Keep both readers and prefer whichever produced the most complete sequence.
+    if len(structured_tracks) > len(tracks):
+        tracks = structured_tracks
     return name, tracks
+
+
+async def _apple_structured_playlist(page) -> Tuple[str, List[Dict[str, str]]]:
+    """Read JSON bootstrap scripts without depending on Apple's CSS class names."""
+    try:
+        scripts = await page.locator('script[type="application/json"]').all_text_contents()
+    except Exception:
+        return "", []
+    return _apple_playlist_from_scripts(scripts)
+
+
+def _apple_playlist_from_scripts(scripts: List[str]) -> Tuple[str, List[Dict[str, str]]]:
+    best_name, best_tracks = "", []
+    for raw in scripts or []:
+        if not raw or len(raw) > 20_000_000:  # avoid pathological pages / support dumps
+            continue
+        try:
+            obj = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        name, tracks = _apple_playlist_from_obj(obj)
+        if len(tracks) > len(best_tracks):
+            best_name, best_tracks = name, tracks
+    return best_name, best_tracks
+
+
+def _apple_playlist_from_obj(obj: Any) -> Tuple[str, List[Dict[str, str]]]:
+    """Find the most complete playlist resource inside an Apple bootstrap object."""
+    candidates: List[Tuple[str, List[Dict[str, str]]]] = []
+
+    def visit(value: Any, depth: int = 0) -> None:
+        if depth > 40:
+            return
+        if isinstance(value, dict):
+            resource_type = str(value.get("type") or "").lower()
+            attrs = value.get("attributes") if isinstance(value.get("attributes"), dict) else {}
+            if resource_type in ("playlists", "library-playlists"):
+                extracted: List[Dict[str, str]] = []
+                relationships = value.get("relationships") or {}
+                track_rel = relationships.get("tracks") if isinstance(relationships, dict) else {}
+                data = track_rel.get("data") if isinstance(track_rel, dict) else None
+                _apple_tracks_from_obj(data, extracted)
+                if extracted:
+                    candidates.append((str(attrs.get("name") or "").strip(), extracted))
+            for child in value.values():
+                visit(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, depth + 1)
+
+    visit(obj)
+    return max(candidates, key=lambda candidate: len(candidate[1])) if candidates else ("", [])
 
 
 async def _playlist_name(page) -> str:
@@ -452,15 +580,37 @@ async def _dismiss_consent(page) -> None:
 
 async def playlist_tracklist(page, url: str, log=print):
     """Scrape a public Apple Music playlist -> (name, [{title, artist}])."""
-    from urllib.parse import urlparse
-    host = (urlparse(url).hostname or "").lower()
-    if host != "music.apple.com" and not host.endswith(".music.apple.com"):
+    if not is_apple_playlist_url(url):
         log("  unsupported playlist URL — paste a public music.apple.com playlist link")
         return "", []
     name, tracks = await applemusic_tracklist(page, url, log)
     if not tracks:
+        log("  " + await _apple_failure_reason(page))
         await _dump_playlist_debug(page)
     return name, tracks
+
+
+async def _apple_failure_reason(page) -> str:
+    """Best-effort explanation without relying on one locale or one page layout."""
+    try:
+        text = ((await page.title()) + "\n" + (await page.locator("body").inner_text())).lower()
+    except Exception:
+        return "Apple Music returned no readable playlist content."
+    unavailable = (
+        "not available in your country", "not available in your region",
+        "indisponible dans votre pays", "indisponible dans votre région",
+        "item not available", "contenu indisponible",
+    )
+    missing = (
+        "playlist not found", "page not found", "playlist introuvable",
+        "page introuvable", "content is no longer available",
+    )
+    if any(marker in text for marker in unavailable):
+        return "This playlist is unavailable in the current Apple Music region."
+    if any(marker in text for marker in missing):
+        return "This playlist no longer exists or is not publicly accessible."
+    return ("No public tracks were found. The playlist may be empty/private, or Apple "
+            "may have changed the page format.")
 
 
 async def _dump_playlist_debug(page) -> None:

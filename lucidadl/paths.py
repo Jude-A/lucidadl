@@ -45,6 +45,8 @@ STATE_PATH = str(DATA_DIR / "state.json")          # dedup (downloaded track URL
 CONFIG_PATH = str(DATA_DIR / "config.json")        # user settings (music dir, …)
 LOG_PATH = str(DATA_DIR / "run.log")               # last run's log (fixed, not cwd)
 FAILED_PATH = str(DATA_DIR / "failed.txt")         # last run's failures (for `retry`)
+PLAYLIST_RUN_PATH = str(DATA_DIR / "playlist-run.json")  # resumable last playlist run
+PLAYLIST_TEXT_PATH = str(DATA_DIR / "playlist.txt")      # last extracted track list
 
 
 # --- user config (persisted) ------------------------------------------------

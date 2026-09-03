@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
+import time
 import traceback
 from typing import Dict, List, Optional, Tuple
 
 import click
 
+from . import __version__
 from . import api, organize, paths, progress, transcode, utils
-from .api import LucidaClient, default_country, normalize_service, DOWNSCALE_CHOICES, LUCIDA
-from .downloader import run_batch
+from .api import (LucidaClient, default_country, normalize_service, DOWNSCALE_CHOICES,
+                  is_apple_playlist_url, LUCIDA)
+from .downloader import preview_tracks, run_batch
+from .models import FailedItem
 from .session import (lucida_context, ensure_cleared, get_page, BrowserClosed,
                       acquire_clearance, load_clearance, chromium_installed,
                       install_chromium)
@@ -25,10 +30,18 @@ DEFAULT_OUT = paths.default_music_dir()
 INPUTS = paths.cwd("inputs")
 LOG_PATH = paths.LOG_PATH
 FAILED_PATH = paths.FAILED_PATH
+PLAYLIST_RUN_PATH = paths.PLAYLIST_RUN_PATH
+PLAYLIST_TEXT_PATH = paths.PLAYLIST_TEXT_PATH
 
 
-FailedItem = Tuple[str, str]
 RunResult = Tuple[Dict[str, int], List[FailedItem]]
+
+
+def _as_failed_item(value) -> FailedItem:
+    if isinstance(value, FailedItem):
+        return value
+    parts = list(value) if isinstance(value, (tuple, list)) else ["track", str(value)]
+    return FailedItem(*(parts + ["", ""])[:4])
 
 
 def _write_failed(items: List[FailedItem]) -> None:
@@ -41,14 +54,17 @@ def _write_failed(items: List[FailedItem]) -> None:
             return
         with open(FAILED_PATH, "w", encoding="utf-8") as f:
             f.write("# Failed items — re-run with: lucidadl retry\n")
-            f.write("# kind<TAB>query or URL\n")
-            f.writelines(f"{kind}\t{item}\n" for kind, item in items)
+            f.write("# kind<TAB>query or URL<TAB>playlist<TAB>track number\n")
+            for raw in items:
+                item = _as_failed_item(raw)
+                f.write(f"{item.kind}\t{item.item}\t{item.collection}\t{item.track_no}\n")
     except Exception as e:
         # don't fail silently: the user is told to `retry`, but the list wasn't saved.
         click.secho(f"⚠ couldn't write {FAILED_PATH} ({e}) — `retry` won't have these "
                     f"items. Re-run them manually:", fg="yellow")
-        for kind, item in items:
-            click.echo(f"    {kind}: {item}")
+        for raw in items:
+            item = _as_failed_item(raw)
+            click.echo(f"    {item.kind}: {item.item}")
 
 _CLOSED_HINT = (
     "The browser closed on its own. Try: (1) re-run; (2) close any open Chrome "
@@ -72,12 +88,85 @@ def _read_failed() -> List[FailedItem]:
     """Read typed failures; old untyped failed.txt entries remain track retries."""
     out: List[FailedItem] = []
     for line in _read_lines(FAILED_PATH):
-        kind, sep, item = line.partition("\t")
-        if sep and kind in ("track", "album") and item:
-            out.append((kind, item))
+        parts = line.split("\t")
+        kind = parts[0] if parts else ""
+        item = parts[1] if len(parts) > 1 else ""
+        if kind in ("track", "album") and item:
+            out.append(FailedItem(kind, item,
+                                  parts[2] if len(parts) > 2 else "",
+                                  parts[3] if len(parts) > 3 else ""))
         else:
-            out.append(("track", line))
+            out.append(FailedItem("track", line))
     return out
+
+
+def _load_playlist_run() -> dict:
+    try:
+        with open(PLAYLIST_RUN_PATH, encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_playlist_run(value: dict) -> None:
+    value = dict(value)
+    value["updated_at"] = int(time.time())
+    tmp = PLAYLIST_RUN_PATH + f".{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+    os.replace(tmp, PLAYLIST_RUN_PATH)
+
+
+def _pending_playlist_run() -> dict:
+    value = _load_playlist_run()
+    return value if value.get("status") == "running" and value.get("tracks") else {}
+
+
+def _playlist_run_options(value: dict) -> dict:
+    """Validated options from a saved run; corrupt values fall back conservatively."""
+    opts = value.get("options") if isinstance(value.get("options"), dict) else {}
+    try:
+        jobs = max(1, min(100, int(opts.get("jobs", 3))))
+    except (TypeError, ValueError):
+        jobs = 3
+    return {
+        "service": opts.get("service") or "qobuz",
+        "country": opts.get("country"),
+        "downscale": opts.get("downscale") or "original",
+        "out": opts.get("out") or paths.default_music_dir(),
+        "hidden": bool(opts.get("hidden", False)),
+        "jobs": jobs,
+        "organize_on": bool(opts.get("organize_on", True)),
+        "to_fmt": opts.get("to_fmt") or None,
+        "bitrate": opts.get("bitrate") or None,
+        "keep_orig": bool(opts.get("keep_orig", False)),
+        "force": bool(opts.get("force", False)),
+    }
+
+
+async def _resume_playlist_run(value: dict) -> RunResult:
+    tracks = value.get("tracks") if isinstance(value.get("tracks"), list) else []
+    items = [str(item.get("query") or "") for item in tracks if isinstance(item, dict)]
+    numbers = [str(item.get("track_no") or "") for item in tracks if isinstance(item, dict)]
+    if not items or any(not item for item in items):
+        click.secho("The saved playlist run is unreadable; paste its URL again.", fg="red")
+        return _failed_result(["saved playlist"], "track")
+    opts = _playlist_run_options(value)
+    collection = str(value.get("collection") or "Playlist")
+    click.secho(f'Resuming playlist "{collection}" ({len(items)} tracks)…', fg="cyan")
+    result = await _run(
+        items, "track", opts["service"], opts["country"], opts["downscale"],
+        opts["out"], opts["hidden"], opts["jobs"], dedup=True,
+        organize_on=opts["organize_on"], to_fmt=opts["to_fmt"],
+        bitrate=opts["bitrate"], keep_orig=opts["keep_orig"],
+        collection=collection, force=opts["force"], quiet_resolve=True,
+        track_numbers=numbers,
+    )
+    value["status"] = "incomplete" if result[0]["fail"] or result[1] else "complete"
+    value["summary"] = result[0]
+    _save_playlist_run(value)
+    return result
 
 
 def _read_batch(path: str, label: str) -> List[str]:
@@ -92,8 +181,17 @@ def _read_batch(path: str, label: str) -> List[str]:
     return items
 
 
-def _failed_result(items: List[str], kind: str) -> RunResult:
-    return ({"ok": 0, "skip": 0, "fail": len(items)}, [(kind, item) for item in items])
+def _failed_result(items: List[str], kind: str, collection: Optional[str] = None,
+                   track_numbers: Optional[List[str]] = None) -> RunResult:
+    failed = [
+        FailedItem(
+            kind, item, collection or "",
+            str(track_numbers[index])
+            if collection and track_numbers and index < len(track_numbers) else "",
+        )
+        for index, item in enumerate(items)
+    ]
+    return {"ok": 0, "skip": 0, "fail": len(items)}, failed
 
 
 def _exit_if_failed(result: RunResult) -> None:
@@ -132,7 +230,7 @@ def _service_opts(f):
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(message="lucidadl %(version)s")
+@click.version_option(version=__version__, message="lucidadl %(version)s")
 @click.pass_context
 def cli(ctx):
     """Parallel-HTTP lucida.to downloader (browser only needed for Cloudflare).
@@ -157,7 +255,8 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
                organize_on: bool = True, to_fmt: Optional[str] = None,
                bitrate: Optional[str] = None, keep_orig: bool = False,
                collection: Optional[str] = None, force: bool = False,
-               quiet_resolve: bool = False, save_failures: bool = True) -> RunResult:
+               quiet_resolve: bool = False, save_failures: bool = True,
+               track_numbers: Optional[List[str]] = None) -> RunResult:
     if not items:
         click.secho("Nothing to download.", fg="yellow")
         return {"ok": 0, "skip": 0, "fail": 0}, []
@@ -172,7 +271,7 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
         if not transcode.available():
             click.secho("⚠ ffmpeg not found — install it (pip install imageio-ffmpeg) "
                         "or drop --to.", fg="red")
-            result = _failed_result(items, kind)
+            result = _failed_result(items, kind, collection, track_numbers)
             if save_failures:
                 _write_failed(result[1])
             return result
@@ -185,7 +284,7 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
     logf = open(LOG_PATH, "w", encoding="utf-8")
     reporter = progress.make_reporter(echo=click.echo, logfile=logf)
     log = reporter.log
-    result = _failed_result(items, kind)
+    result = _failed_result(items, kind, collection, track_numbers)
 
     log(f"# lucidadl — kind={kind} service={service} country={cc!r} "
         f"format={downscale} jobs={jobs} dedup={dedup} "
@@ -220,7 +319,8 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
             totals, failed = await run_batch(client, state, items, kind, service, cc, out,
                                              jobs, dedup, organize_on, tx,
                                              collection=collection, reporter=reporter,
-                                             quiet_resolve=quiet_resolve)
+                                             quiet_resolve=quiet_resolve,
+                                             track_numbers=track_numbers)
         finally:
             await client.aclose()
         log(f"\nDone — OK:{totals['ok']}  skipped:{totals['skip']}  failed:{totals['fail']}")
@@ -312,7 +412,12 @@ def albums_cmd(file, service, country, downscale, out, organize_on, jobs,
 @_service_opts
 def retry_cmd(service, country, downscale, out, organize_on, jobs, to_fmt,
               bitrate, keep_orig, force, hidden):
-    """Re-run the failed items from the last run (failed.txt)."""
+    """Resume an interrupted playlist or re-run the last failed items."""
+    pending = _pending_playlist_run()
+    if pending:
+        result = asyncio.run(_resume_playlist_run(pending))
+        _exit_if_failed(result)
+        return
     items = _read_failed()
     if not items:
         click.secho("No failures to re-run (failed.txt is empty).", fg="yellow")
@@ -330,20 +435,43 @@ async def _retry(items: List[FailedItem], service: str, country: Optional[str],
     """Retry failures by their original type, then keep only what still failed."""
     totals = {"ok": 0, "skip": 0, "fail": 0}
     remaining: List[FailedItem] = []
-    for kind in ("track", "album"):
-        values = [item for item_kind, item in items if item_kind == kind]
-        if not values:
+    normalized = [_as_failed_item(item) for item in items]
+    manifest = _load_playlist_run()
+    groups = {}
+    for item in normalized:
+        groups.setdefault((item.kind, item.collection), []).append(item)
+    for (kind, collection), group in groups.items():
+        values = [item.item for item in group]
+        if not values or kind not in ("track", "album"):
             continue
-        click.secho(f"\nRetrying {len(values)} {kind}{'s' if len(values) != 1 else ''}…",
-                    fg="cyan")
-        result = await _run(values, kind, service, country, downscale, out, hidden, jobs,
-                            dedup=True, organize_on=organize_on, to_fmt=to_fmt,
-                            bitrate=bitrate, keep_orig=keep_orig, force=force,
-                            save_failures=False)
+        label = f' in playlist "{collection}"' if collection else ""
+        click.secho(
+            f"\nRetrying {len(values)} {kind}{'s' if len(values) != 1 else ''}{label}…",
+            fg="cyan",
+        )
+        saved = (_playlist_run_options(manifest)
+                 if collection and manifest.get("collection") == collection else {})
+        result = await _run(values, kind, saved.get("service", service),
+                            saved.get("country", country), saved.get("downscale", downscale),
+                            saved.get("out", out), saved.get("hidden", hidden),
+                            saved.get("jobs", jobs), dedup=True,
+                            organize_on=saved.get("organize_on", organize_on),
+                            to_fmt=saved.get("to_fmt", to_fmt),
+                            bitrate=saved.get("bitrate", bitrate),
+                            keep_orig=saved.get("keep_orig", keep_orig),
+                            force=saved.get("force", force),
+                            collection=collection or None, save_failures=False,
+                            track_numbers=[item.track_no for item in group]
+                            if collection else None)
         for key in totals:
             totals[key] += result[0][key]
         remaining.extend(result[1])
     _write_failed(remaining)
+    if (manifest.get("status") == "incomplete" and manifest.get("collection") and
+            not any(item.collection == manifest.get("collection") for item in remaining)):
+        manifest["status"] = "complete"
+        manifest["summary"] = totals
+        _save_playlist_run(manifest)
     if not remaining:
         click.secho("\n✓ All previous failures were resolved.", fg="green")
     return totals, remaining
@@ -472,17 +600,127 @@ def _render_playlist(collection: str, tracks: list, dry_run: bool) -> None:
                       f'·  →  [dim]Playlists/{coll}/[/]\n')
 
 
-async def _playlist(url, dry_run, service, country, downscale, out, hidden,
-                    jobs, organize_on=True, to_fmt=None, bitrate=None, keep_orig=False,
-                    force=False) -> bool:
-    from urllib.parse import urlparse
+def _render_playlist_check(collection: str, rows: list) -> None:
+    matched = sum(row.get("status") == "matched" for row in rows)
+    missing = len(rows) - matched
+    console = None
+    try:
+        from rich.console import Console
+        candidate = Console()
+        if candidate.is_terminal:
+            console = candidate
+    except Exception:
+        pass
+    if console is None:
+        click.echo(f'Match check for "{collection}" — {matched} ready, {missing} unresolved')
+        for row in rows:
+            mark = "OK" if row.get("status") == "matched" else "MISS"
+            detail = (f"{row.get('artist')} - {row.get('title')}"
+                      if row.get("status") == "matched" else
+                      (row.get("error") or row.get("status")))
+            click.echo(f"  {row['index']:>3}. {mark:<4} {row['query']} → {detail}")
+        return
+    from rich.markup import escape
+    from rich.table import Table
+    table = Table(title=f'Match check — {escape(collection)}', box=None, pad_edge=False)
+    table.add_column("#", justify="right", style="dim", width=4)
+    table.add_column("Status", width=9)
+    table.add_column("Requested")
+    table.add_column("Matched on lucida")
+    for row in rows:
+        ok = row.get("status") == "matched"
+        matched_text = (f"{row.get('artist')} - {row.get('title')}" if ok else
+                        (row.get("error") or row.get("status") or "unresolved"))
+        table.add_row(str(row["index"]), "[green]ready[/]" if ok else "[red]unresolved[/]",
+                      escape(row["query"]), escape(matched_text))
+    console.print(table)
+    console.print(f"[green]{matched} ready[/]  ·  "
+                  f"[{'red' if missing else 'green'}]{missing} unresolved[/]")
 
-    host = (urlparse(url).hostname or "").lower()
-    if host != "music.apple.com" and not host.endswith(".music.apple.com"):
+
+async def _check_playlist_matches(collection: str, items: List[str], service: str,
+                                  country: Optional[str], hidden: bool, jobs: int,
+                                  edit_path: Optional[str] = None) -> bool:
+    cc = country or default_country(service)
+    cf, ua = load_clearance()
+    if not (cf and ua):
+        click.echo("Preparing lucida.to access for the match check…")
+        try:
+            cf, ua = await acquire_clearance(hidden=hidden)
+        except Exception as exc:
+            click.secho(f"Could not prepare lucida.to access: {exc}", fg="red")
+            return False
+
+    async def _acquire():
+        return await acquire_clearance(hidden=hidden)
+
+    client = LucidaClient(cf, ua, acquire=_acquire, country=cc, jobs=jobs, log=click.echo)
+    try:
+        await client.start_http()
+        rows = await preview_tracks(client, items, service, cc, jobs=jobs, log=click.echo)
+    except Exception as exc:
+        click.secho(f"Match check failed: {exc}", fg="red")
+        return False
+    finally:
+        await client.aclose()
+    _render_playlist_check(collection, rows)
+    unresolved = sum(row.get("status") != "matched" for row in rows)
+    if unresolved:
+        editable = edit_path or PLAYLIST_TEXT_PATH
+        click.secho(
+            f"Edit {editable}, then download the corrected list with:\n"
+            f'  lucida playlist-file "{editable}" --name "{collection}"',
+            fg="yellow",
+        )
+    return unresolved == 0
+
+
+async def _download_playlist_items(collection: str, items: List[str], source: str,
+                                   service: str, country: Optional[str], downscale: str,
+                                   out: str, hidden: bool, jobs: int,
+                                   organize_on: bool = True, to_fmt=None, bitrate=None,
+                                   keep_orig: bool = False, force: bool = False,
+                                   tracks: Optional[List[dict]] = None) -> bool:
+    pad = max(2, len(str(len(items))))
+    track_numbers = [f"{index:0{pad}d}" for index in range(1, len(items) + 1)]
+    track_rows = tracks or [{} for _ in items]
+    manifest = {
+        "version": 1, "status": "running", "source_url": source,
+        "collection": collection,
+        "tracks": [{"track_no": number, "artist": track.get("artist", ""),
+                    "title": track.get("title", ""), "query": item}
+                   for number, track, item in zip(track_numbers, track_rows, items)],
+        "options": {
+            "service": service, "country": country, "downscale": downscale,
+            "out": os.path.abspath(out), "hidden": hidden, "jobs": jobs,
+            "organize_on": organize_on, "to_fmt": to_fmt, "bitrate": bitrate,
+            "keep_orig": keep_orig, "force": force,
+        },
+    }
+    try:
+        _save_playlist_run(manifest)
+    except Exception as e:
+        click.secho(f"Could not save playlist recovery data: {e}", fg="yellow")
+    result = await _run(items, "track", service, country, downscale, out, hidden, jobs,
+                        dedup=True, organize_on=organize_on, to_fmt=to_fmt,
+                        bitrate=bitrate, keep_orig=keep_orig, collection=collection,
+                        force=force, quiet_resolve=True, track_numbers=track_numbers)
+    manifest["status"] = "incomplete" if result[0]["fail"] or result[1] else "complete"
+    manifest["summary"] = result[0]
+    try:
+        _save_playlist_run(manifest)
+    except Exception as e:
+        click.secho(f"Could not update playlist recovery data: {e}", fg="yellow")
+    return not (result[0]["fail"] or result[1])
+
+
+async def _playlist(url, dry_run, service, country, downscale, out, hidden,
+                     jobs, organize_on=True, to_fmt=None, bitrate=None, keep_orig=False,
+                     force=False, check_matches=False) -> bool:
+    if not is_apple_playlist_url(url):
         click.secho("Only public Apple Music playlist links are supported.", fg="red")
         return False
 
-    cc = country or default_country(service)
     name, tracks = "", []
 
     async def _scrape(headless: bool):
@@ -520,34 +758,73 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
     collection = name or "Playlist"
     items = [f"{t['artist']} - {t['title']}" for t in tracks]
     try:
-        os.makedirs(INPUTS, exist_ok=True)
-        with open(os.path.join(INPUTS, "playlist.txt"), "w", encoding="utf-8") as f:
+        with open(PLAYLIST_TEXT_PATH, "w", encoding="utf-8") as f:
             f.write("\n".join(items) + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        click.secho(f"Could not save the extracted list: {e}", fg="yellow")
 
     _render_playlist(collection, tracks, dry_run)
     if dry_run:
-        click.secho("--dry-run: nothing downloaded (list saved to inputs/playlist.txt).",
+        click.secho(f"--dry-run: nothing downloaded (list saved to {PLAYLIST_TEXT_PATH}).",
                     fg="yellow")
         return True
-    result = await _run(items, "track", service, country, downscale, out, hidden, jobs,
-                        dedup=True, organize_on=organize_on, to_fmt=to_fmt,
-                        bitrate=bitrate, keep_orig=keep_orig, collection=collection,
-                        force=force, quiet_resolve=True)
-    return not (result[0]["fail"] or result[1])
+    if check_matches:
+        click.secho("Checking automatic matches without downloading…", fg="cyan")
+        return await _check_playlist_matches(collection, items, service, country, hidden, jobs)
+    return await _download_playlist_items(
+        collection, items, url, service, country, downscale, out, hidden, jobs,
+        organize_on, to_fmt, bitrate, keep_orig, force, tracks,
+    )
 
 
 @cli.command("playlist")
 @click.argument("url")
 @click.option("--dry-run", is_flag=True, help="List the tracks without downloading.")
+@click.option("--check", "check_matches", is_flag=True,
+              help="Resolve every title through lucida without downloading.")
 @_service_opts
-def playlist_cmd(url, dry_run, service, country, downscale, out, organize_on, jobs,
+def playlist_cmd(url, dry_run, check_matches, service, country, downscale, out, organize_on, jobs,
                  to_fmt, bitrate, keep_orig, force, hidden):
     """Import a public Apple Music playlist and download its tracks via lucida."""
+    if dry_run and check_matches:
+        raise click.UsageError("Choose either --dry-run or --check, not both.")
     ok = asyncio.run(_playlist(url, dry_run, service, country, downscale, out, hidden,
                                jobs, organize_on, to_fmt=to_fmt, bitrate=bitrate,
-                               keep_orig=keep_orig, force=force))
+                               keep_orig=keep_orig, force=force,
+                               check_matches=check_matches))
+    if not ok:
+        raise click.exceptions.Exit(1)
+
+
+@cli.command("playlist-file")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--name", required=True, help="Playlist name used for its folder and .m3u8.")
+@click.option("--check", "check_matches", is_flag=True,
+              help="Resolve every title through lucida without downloading.")
+@_service_opts
+def playlist_file_cmd(file, name, check_matches, service, country, downscale, out,
+                      organize_on, jobs, to_fmt, bitrate, keep_orig, force, hidden):
+    """Download a corrected text list as an ordered playlist."""
+    items = _read_lines(file)
+    if not items:
+        click.secho(f"Playlist file is empty: {os.path.abspath(file)}", fg="yellow")
+        raise click.exceptions.Exit(1)
+    collection = " ".join(name.split()).strip()
+    if not collection:
+        raise click.UsageError("--name cannot be empty.")
+    if check_matches:
+        ok = asyncio.run(_check_playlist_matches(
+            collection, items, service, country, hidden, jobs,
+            edit_path=os.path.abspath(file)))
+    else:
+        _render_playlist(collection, [
+            {"artist": item.partition(" - ")[0] if " - " in item else "",
+             "title": item.partition(" - ")[2] if " - " in item else item}
+            for item in items
+        ], dry_run=False)
+        ok = asyncio.run(_download_playlist_items(
+            collection, items, os.path.abspath(file), service, country, downscale,
+            out, hidden, jobs, organize_on, to_fmt, bitrate, keep_orig, force))
     if not ok:
         raise click.exceptions.Exit(1)
 
@@ -571,6 +848,8 @@ def config_cmd(music):
     click.echo(f"State/dedup : {paths.STATE_PATH}")
     click.echo(f"Log         : {paths.LOG_PATH}")
     click.echo(f"Failures    : {paths.FAILED_PATH}")
+    click.echo(f"Playlist    : {paths.PLAYLIST_TEXT_PATH}")
+    click.echo(f"Playlist run: {paths.PLAYLIST_RUN_PATH}")
     click.echo(f"Config      : {paths.CONFIG_PATH}")
     if not music:
         click.secho("Tip: `lucida config --music \"D:/Music\"` to change the folder "
@@ -578,6 +857,63 @@ def config_cmd(music):
 
 
 # --- setup / doctor / debug -------------------------------------------------
+
+def _music_health(music_dir: str) -> tuple[bool, str]:
+    """Check that the configured destination can be created and written."""
+    marker = os.path.join(music_dir, f".lucidadl-write-check-{os.getpid()}")
+    try:
+        os.makedirs(music_dir, exist_ok=True)
+        with open(marker, "w", encoding="utf-8") as handle:
+            handle.write("ok")
+        os.remove(marker)
+        return True, "ready"
+    except Exception as exc:
+        try:
+            os.remove(marker)
+        except OSError:
+            pass
+        return False, str(exc)
+
+
+def _stale_partials(music_dir: str, older_than: int = 24 * 3600) -> List[str]:
+    """Find old temporary downloads only in lucidadl's two staging locations."""
+    cutoff = time.time() - older_than
+    out: List[str] = []
+    for folder in (os.path.join(music_dir, ".incoming"),
+                   os.path.join(music_dir, "Music")):
+        try:
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if name.endswith(".part") and os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    out.append(path)
+        except OSError:
+            continue
+    return out
+
+
+def _cleanup() -> tuple[int, int, int]:
+    state = utils.State(STATE_PATH)
+    removed_paths, removed_items = state.prune()
+    partials = _stale_partials(paths.default_music_dir())
+    removed_partials = 0
+    for path in partials:
+        try:
+            os.remove(path)
+            removed_partials += 1
+        except OSError as exc:
+            click.secho(f"Could not remove {path}: {exc}", fg="yellow")
+    click.secho(
+        f"Cleanup complete — {removed_paths} missing file reference(s), "
+        f"{removed_items} empty item(s), {removed_partials} stale partial file(s) removed.",
+        fg="green",
+    )
+    return removed_paths, removed_items, removed_partials
+
+
+@cli.command("cleanup")
+def cleanup_cmd():
+    """Prune missing download records and partial files older than 24 hours."""
+    _cleanup()
 
 async def _setup() -> bool:
     click.secho("\nlucidadl setup", bold=True)
@@ -619,6 +955,10 @@ async def _doctor(live: bool = False) -> bool:
     ffmpeg_ok = transcode.available()
     cf, ua = load_clearance()
     access_ok = bool(cf and ua)
+    music_ok, music_detail = _music_health(paths.default_music_dir())
+    stale_partials = _stale_partials(paths.default_music_dir())
+    playlist_run = _load_playlist_run()
+    playlist_status = playlist_run.get("status") or "none"
 
     click.secho("\nlucidadl doctor", bold=True)
     click.echo(f"Python      : {sys.version.split()[0]}")
@@ -629,6 +969,12 @@ async def _doctor(live: bool = False) -> bool:
     click.secho(f"Access      : {'saved' if access_ok else 'not prepared'}",
                 fg="green" if access_ok else "yellow")
     click.echo(f"Music       : {paths.default_music_dir()}")
+    click.secho(f"Music write : {music_detail if not music_ok else 'ready'}",
+                fg="green" if music_ok else "red")
+    click.secho(f"Partial files: {len(stale_partials)} stale",
+                fg="yellow" if stale_partials else "green")
+    click.secho(f"Playlist run: {playlist_status}",
+                fg="yellow" if playlist_status in ("running", "incomplete") else "green")
     click.echo(f"App data    : {paths.DATA_DIR}")
 
     live_ok = True
@@ -652,9 +998,13 @@ async def _doctor(live: bool = False) -> bool:
 
     if not browser_ok or not access_ok:
         click.secho("\nNext step: run `lucida setup`.", fg="cyan")
+    if stale_partials:
+        click.secho("Run `lucida cleanup` to remove stale temporary downloads.", fg="cyan")
+    if playlist_status in ("running", "incomplete"):
+        click.secho("Run `lucida retry` to continue the unfinished playlist.", fg="cyan")
     elif not live:
         click.secho("\nEverything needed is present.", fg="green")
-    return browser_ok and ffmpeg_ok and access_ok and live_ok
+    return browser_ok and ffmpeg_ok and access_ok and music_ok and live_ok
 
 
 @cli.command()

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 from . import matching, organize, progress, transcode, utils
 from .api import LucidaClient, LucidaError, FALLBACK_SERVICES, normalize_service, _long
+from .models import FailedItem
 
 
 def _query_variants(line: str) -> List[str]:
@@ -119,6 +120,36 @@ def _filesize_mb(path: Optional[str]) -> float:
         return 0.0
 
 
+def friendly_error(error: Exception) -> str:
+    """Turn low-level failures into a short category plus an actionable next step."""
+    text = str(error).strip() or error.__class__.__name__
+    lowered = text.lower()
+    if "403" in lowered or "cloudflare" in lowered or "clearance" in lowered:
+        return f"access expired or refused — run `lucida setup` ({text})"
+    if "429" in lowered or "rate limit" in lowered or "too many" in lowered:
+        return f"service temporarily rate-limited — retry later ({text})"
+    if "timed out" in lowered or "timeout" in lowered or "stuck" in lowered:
+        return f"service timed out — safe to retry ({text})"
+    if lowered.startswith("write:") or "permission denied" in lowered:
+        return f"could not write the file — check the music folder ({text})"
+    return text
+
+
+def _playlist_download_key(url: str, collection: str, track_no: str) -> str:
+    return f"{url}|playlist|{utils.sanitize(collection)}|{track_no}"
+
+
+def _existing_playlist_copy(state: utils.State, url: str, folder: str,
+                            track_no: str) -> str:
+    """Find a v1.1 URL-keyed file at this exact playlist position, if one exists."""
+    prefix = f"{track_no} - ".casefold()
+    for path in state.done.get(url, []):
+        if (utils._path_exists(path) and utils._is_under(path, folder) and
+                os.path.basename(path).casefold().startswith(prefix)):
+            return path
+    return ""
+
+
 async def _resolve_targets(client, line, kind, service, country, strict, log,
                            quiet=False) -> Optional[List[Dict]]:
     url = await _resolve_url(client, line, service, kind, log, strict, quiet=quiet)
@@ -142,6 +173,36 @@ async def _resolve_targets(client, line, kind, service, country, strict, log,
     return targets
 
 
+async def preview_tracks(client: LucidaClient, items: List[str], service: str,
+                         country: Optional[str], jobs: int = 3,
+                         log=print) -> List[Dict]:
+    """Resolve playlist entries without starting a download, in source order."""
+    sem = asyncio.Semaphore(max(1, jobs))
+
+    async def resolve(line: str, index: int) -> Dict:
+        try:
+            async with sem:
+                targets = await _resolve_targets(
+                    client, line, "track", service, country, False, log, quiet=True
+                )
+            if not targets:
+                return {"index": index, "query": line, "status": "not found"}
+            target = targets[0]
+            meta = target.get("meta") or {}
+            return {
+                "index": index, "query": line, "status": "matched",
+                "url": target.get("url") or "", "artist": meta.get("artist") or "",
+                "title": meta.get("title") or target.get("label") or "",
+            }
+        except Exception as exc:
+            return {"index": index, "query": line, "status": "error",
+                    "error": friendly_error(exc)}
+
+    rows = await asyncio.gather(*(resolve(line, index)
+                                  for index, line in enumerate(items, 1)))
+    return sorted(rows, key=lambda row: row["index"])
+
+
 async def _download_target(client, state, target, country, out, dedup, organize_on,
                            tx, reporter, totals, failed, lock, collection=None) -> None:
     url, label = target["url"], target["label"]
@@ -150,14 +211,24 @@ async def _download_target(client, state, target, country, out, dedup, organize_
     # Artists/ (or another playlist) is still fetched into THIS playlist if it's missing.
     under = (os.path.join(out, organize.PLAYLISTS_DIR, utils.sanitize(collection))
              if collection else None)
+    state_key = url
+    task_key = url
+    if collection and target.get("track_no"):
+        state_key = _playlist_download_key(url, collection, target["track_no"])
+        task_key = state_key
+        # Seed the new occurrence-aware state from an existing 1.1 playlist copy. This
+        # migrates lazily and still lets a duplicate URL at another position download.
+        legacy_path = _existing_playlist_copy(state, url, under, target["track_no"])
+        if dedup and not state.has(state_key, under) and legacy_path:
+            state.add(state_key, legacy_path)
     reserved = False
-    if dedup and not state.reserve(url, under):
+    if dedup and not state.reserve(state_key, under):
         log(f"  ⏭ already downloaded / in progress, skipped: {label}")
         async with lock:
             totals["skip"] += 1
         return
     reserved = dedup
-    reporter.start(url, label)
+    reporter.start(task_key, label)
     track = {"url": url, "csrf": target["csrf"], "csrfFallback": target.get("csrfFallback")}
     path, last_err = None, None
     for attempt in range(2):
@@ -166,21 +237,24 @@ async def _download_target(client, state, target, country, out, dedup, organize_
             path = await client.run_job(
                 handoff, server, _dest_dir(out, organize_on), utils.sanitize(label),
                 title=label,
-                on_status=lambda m, k=url: reporter.status(k, m),
-                on_bytes=lambda d, t, k=url: reporter.progress(k, d, t))
+                on_status=lambda m, k=task_key: reporter.status(k, m),
+                on_bytes=lambda d, t, k=task_key: reporter.progress(k, d, t))
             break
         except Exception as e:
             last_err = e
             if attempt == 0:
-                reporter.status(url, f"{e} — retrying")
+                reporter.status(task_key, f"{friendly_error(e)} — retrying")
                 await asyncio.sleep(3)
     if path is None:
         if reserved:
-            state.release(url)
-        reporter.finish(url, False, f"  ✗ {label}: {last_err}")
+            state.release(state_key)
+        reporter.finish(task_key, False, f"  ✗ {label}: {friendly_error(last_err)}")
         async with lock:
             totals["fail"] += 1
-            failed.append(("track", url))  # retry can download this resolved track directly
+            failed.append(FailedItem(
+                "track", target.get("source_line") if collection else url,
+                collection or "", target.get("track_no") if collection else "",
+            ))
         return
 
     finals = [path]
@@ -200,11 +274,15 @@ async def _download_target(client, state, target, country, out, dedup, organize_
             # report a bogus success or record a non-existent path in the dedup state
             # (that would loop forever): fail it so `retry` re-attempts.
             if reserved:
-                state.release(url)
-            reporter.finish(url, False, f"  ✗ {label}: organized with no file (empty archive?)")
+                state.release(state_key)
+            reporter.finish(task_key, False,
+                            f"  ✗ {label}: organized with no file (empty archive?)")
             async with lock:
                 totals["fail"] += 1
-                failed.append(("track", url))
+                failed.append(FailedItem(
+                    "track", target.get("source_line") if collection else url,
+                    collection or "", target.get("track_no") if collection else "",
+                ))
             return
     if tx and tx.get("fmt"):
         converted = []
@@ -221,24 +299,28 @@ async def _download_target(client, state, target, country, out, dedup, organize_
         finals = converted
         if transcode_error is not None:
             if reserved:
-                state.release(url)
+                state.release(state_key)
             reporter.finish(
-                url, False,
+                task_key, False,
                 f"  ✗ {label}: downloaded, but {tx['fmt']} conversion failed "
                 f"(original kept): {transcode_error}",
             )
             async with lock:
                 totals["fail"] += 1
-                failed.append(("track", url))
+                failed.append(FailedItem(
+                    "track", target.get("source_line") if collection else url,
+                    collection or "", target.get("track_no") if collection else "",
+                ))
             return
 
     async with lock:
         totals["ok"] += 1
     shown = os.path.relpath(finals[0], out) if finals else os.path.basename(path)
     extra = f" (+{len(finals) - 1})" if len(finals) > 1 else ""
-    reporter.finish(url, True, f"  ✓ {shown}{extra}  ({_filesize_mb(finals[0]):.1f} MB)")
+    reporter.finish(task_key, True,
+                    f"  ✓ {shown}{extra}  ({_filesize_mb(finals[0]):.1f} MB)")
     try:
-        state.add(url, finals[0] if finals else path)
+        state.add(state_key, finals[0] if finals else path)
     except Exception as e:
         log(f"  ⚠ state not saved ({url}): {e}")
 
@@ -248,15 +330,16 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                     jobs: int, dedup: bool, organize_on: bool = True,
                     tx: Optional[Dict] = None, strict: bool = False,
                     collection: Optional[str] = None, reporter=None,
-                    quiet_resolve: bool = False
-                    ) -> Tuple[Dict[str, int], List[Tuple[str, str]]]:
+                    quiet_resolve: bool = False,
+                    track_numbers: Optional[List[str]] = None
+                    ) -> Tuple[Dict[str, int], List[FailedItem]]:
     if reporter is None:
         reporter = progress.TextReporter(print)
     log = reporter.log
     totals = {"ok": 0, "skip": 0, "fail": 0}
     # (kind, query-or-URL): resolution failures keep their original kind; failures
     # after an album was expanded are direct track URLs and can be retried as tracks.
-    failed: List[Tuple[str, str]] = []
+    failed: List[FailedItem] = []
     sem = asyncio.Semaphore(max(1, jobs))
     lock = asyncio.Lock()
 
@@ -265,24 +348,29 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
     pad = max(2, len(str(len(items))))  # zero-pad width for playlist track numbers
 
     async def resolve_worker(line: str, idx: int) -> None:
+        track_no = (str(track_numbers[idx]) if track_numbers and idx < len(track_numbers)
+                    else f"{idx + 1:0{pad}d}")
         async with sem:
             try:
                 tg = await _resolve_targets(client, line, kind, service, country, strict,
                                             log, quiet=quiet_resolve)
             except Exception as e:
-                log(f"  ✗ resolving \"{line}\": {e}")
+                log(f"  ✗ resolving \"{line}\": {friendly_error(e)}")
                 async with lock:
                     totals["fail"] += 1
-                    failed.append((kind, line))
+                    failed.append(FailedItem(kind, line, collection or "",
+                                             track_no if collection else ""))
                 return
             if tg is None:
                 log(f"  ✗ not found: {line}")
                 async with lock:
                     totals["fail"] += 1
-                    failed.append((kind, line))  # so `retry` searches the right kind
+                    failed.append(FailedItem(kind, line, collection or "",
+                                             track_no if collection else ""))
                 return
             for t in tg:  # keep the source order (used to number playlist tracks)
-                t["track_no"] = f"{idx + 1:0{pad}d}"
+                t["track_no"] = track_no
+                t["source_line"] = line
             async with lock:
                 targets.extend(tg)
 
@@ -300,10 +388,15 @@ async def run_batch(client: LucidaClient, state: utils.State, items: List[str],
                                        organize_on, tx, reporter, totals, failed, lock,
                                        collection)
             except Exception as e:
-                log(f"  ✗ {target.get('label')}: {e}")
+                log(f"  ✗ {target.get('label')}: {friendly_error(e)}")
                 async with lock:
                     totals["fail"] += 1
-                    failed.append(("track", target.get("url") or target.get("label")))
+                    failed.append(FailedItem(
+                        "track",
+                        target.get("source_line") if collection else
+                        (target.get("url") or target.get("label")),
+                        collection or "", target.get("track_no") if collection else "",
+                    ))
 
     await asyncio.gather(*(dl_worker(t) for t in targets), return_exceptions=True)
 

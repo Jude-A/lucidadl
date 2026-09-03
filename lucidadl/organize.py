@@ -129,6 +129,11 @@ def _m3u_title(filename: str) -> str:
     return ((m.group(1) if m else stem).strip()) or stem
 
 
+def _playlist_sort_key(filename: str) -> tuple:
+    match = re.match(r"^(\d+)\s*-", filename)
+    return (int(match.group(1)) if match else 10**12, filename.casefold())
+
+
 def write_m3u8(folder: str) -> Optional[str]:
     """Write/refresh '<folder name>.m3u8' inside `folder`, listing every audio file it
     holds in filename order — playlist tracks are zero-padded 'NN - …', so that order IS
@@ -142,8 +147,11 @@ def write_m3u8(folder: str) -> Optional[str]:
     if not os.path.isdir(_long(folder)):
         return None
     name = os.path.basename(os.path.normpath(folder))
-    tracks = sorted(fn for fn in os.listdir(_long(folder))
-                    if os.path.splitext(fn)[1].lower() in AUDIO_EXT)
+    tracks = sorted(
+        (fn for fn in os.listdir(_long(folder))
+         if os.path.splitext(fn)[1].lower() in AUDIO_EXT),
+        key=_playlist_sort_key,
+    )
     if not tracks:
         return None
     lines = ["#EXTM3U"]
@@ -151,8 +159,16 @@ def write_m3u8(folder: str) -> Optional[str]:
         lines.append(f"#EXTINF:-1,{_m3u_title(fn)}")
         lines.append(fn)
     m3u = os.path.join(folder, utils.sanitize_filename(name + ".m3u8"))
-    with open(_long(m3u), "w", encoding="utf-8", newline="\r\n") as f:
-        f.write("\n".join(lines) + "\n")
+    tmp = m3u + f".{os.getpid()}.tmp"
+    try:
+        with open(_long(tmp), "w", encoding="utf-8", newline="\r\n") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(_long(tmp), _long(m3u))
+    finally:
+        try:
+            os.remove(_long(tmp))
+        except OSError:
+            pass
     return m3u
 
 

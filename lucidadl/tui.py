@@ -13,6 +13,7 @@ import os
 import sys
 
 from . import paths, transcode
+from .session import load_clearance
 
 _TO_NONE = "(none — keep the source format)"
 _SERVICES = ["qobuz", "amazon"]
@@ -31,6 +32,11 @@ def _onoff(b: bool) -> str:
 
 def _is_first_run() -> bool:
     return not (os.path.exists(paths.CONFIG_PATH) or os.path.exists(paths.CLEARANCE_PATH))
+
+
+def _access_ready() -> bool:
+    cf, user_agent = load_clearance()
+    return bool(cf and user_agent)
 
 
 # --- persisted settings -----------------------------------------------------
@@ -138,7 +144,7 @@ def run() -> None:
 
     while True:
         s = _settings()
-        access_saved = os.path.exists(paths.CLEARANCE_PATH)
+        access_saved = _access_ready()
         access = "[green]prepared[/]" if access_saved else "[yellow]setup needed[/]"
         console.print(Panel(
             f"[bold]{_opts_line(s)}[/]\n"
@@ -159,11 +165,15 @@ def run() -> None:
             menu.append(Choice("✨  Set up lucidadl (recommended)", "onboarding"))
         menu += [
             Choice("⬇   Download music", "download"),
-            Choice("🎶  Import an Apple Music playlist", "playlist"),
+            Choice("🎶  Playlists — Apple Music or an edited list", "playlist"),
             Choice("📄  Download from a .txt file", "batch"),
         ]
         failed = cli._read_failed()
-        if failed:
+        pending_playlist = cli._pending_playlist_run()
+        if pending_playlist:
+            menu.append(Choice(
+                f"🔁  Resume {pending_playlist.get('collection', 'playlist')}", "retry"))
+        elif failed:
             menu.append(Choice(f"🔁  Retry failures ({len(failed)})", "retry"))
         menu += [
             Choice("⚙   Settings", "settings"),
@@ -197,7 +207,7 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
     out = paths.default_music_dir()
 
     def _warn_browser():
-        if not os.path.exists(paths.CLEARANCE_PATH):
+        if not _access_ready():
             console.print("[dim]A browser may open briefly to get past "
                           "Cloudflare — that's normal.[/]")
 
@@ -235,23 +245,75 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
         return True
 
     if action == "playlist":
-        url = _ask_text(questionary, "Apple Music playlist URL:", "(empty = back)")
-        if not url:
+        from questionary import Choice
+        source = questionary.select("Playlist source:", choices=[
+            Choice("🍎  Public Apple Music link", "apple"),
+            Choice("📄  Edited .txt list", "file"),
+            Choice("← Back", "back"),
+        ]).ask()
+        if source in (None, "back"):
             return False
-        dry = questionary.confirm("Just list (without downloading)?", default=False).ask()
-        if dry is None:  # cancel must NOT fall through to a full download
+        if source == "apple":
+            url = _ask_text(questionary, "Apple Music playlist URL:", "(empty = back)")
+            if not url:
+                return False
+        else:
+            raw_path = _ask_text(
+                questionary, "Playlist text file:", "(one artist - title per line; empty = back)",
+                default=cli.PLAYLIST_TEXT_PATH,
+            )
+            if not raw_path:
+                return False
+            file_path = os.path.abspath(os.path.expandvars(os.path.expanduser(
+                raw_path.strip('"'))))
+            if not os.path.isfile(file_path):
+                console.print(f"[red]File not found: {file_path}[/]")
+                return True
+            items = cli._read_lines(file_path)
+            if not items:
+                console.print("[yellow]The playlist file is empty.[/]")
+                return True
+            name = _ask_text(questionary, "Playlist name:", "(empty = back)")
+            if not name:
+                return False
+        mode = questionary.select("What should lucidadl do?", choices=[
+            Choice("⬇   Download or resume this playlist", "download"),
+            Choice("✓   Check every automatic match first", "check"),
+            *([Choice("📄  Only extract and save the track list", "list")]
+              if source == "apple" else []),
+            Choice("← Back", "back"),
+        ]).ask()
+        if mode in (None, "back"):
             return False
-        _warn_browser()
-        asyncio.run(cli._playlist(url, dry, s["service"], None, "original", out,
-                                  hidden=False, jobs=s["jobs"], organize_on=True,
-                                  to_fmt=s["to"], bitrate=s["bitrate"],
-                                  keep_orig=s["keep_orig"], force=s["force"]))
+        if not (source == "apple" and mode == "list"):
+            _warn_browser()
+        if source == "apple":
+            asyncio.run(cli._playlist(
+                url, mode == "list", s["service"], None, "original", out,
+                hidden=False, jobs=s["jobs"], organize_on=True, to_fmt=s["to"],
+                bitrate=s["bitrate"], keep_orig=s["keep_orig"], force=s["force"],
+                check_matches=mode == "check"))
+        elif mode == "check":
+            asyncio.run(cli._check_playlist_matches(
+                name, items, s["service"], None, hidden=False, jobs=s["jobs"],
+                edit_path=file_path))
+        else:
+            asyncio.run(cli._download_playlist_items(
+                name, items, file_path, s["service"], None, "original", out,
+                hidden=False, jobs=s["jobs"], organize_on=True, to_fmt=s["to"],
+                bitrate=s["bitrate"], keep_orig=s["keep_orig"], force=s["force"]))
         return True
 
     if action == "batch":
         return _batch_action(console, cli, questionary, go)
 
     if action == "retry":
+        pending = cli._pending_playlist_run()
+        if pending:
+            _warn_browser()
+            result = asyncio.run(cli._resume_playlist_run(pending))
+            _show_run_summary(result, cli._playlist_run_options(pending)["out"], console)
+            return True
         items = cli._read_failed()
         if not items:
             console.print("[yellow]No failures to retry.[/]")
@@ -327,6 +389,7 @@ def _tools_action(console, cli, questionary) -> bool:
         Choice("🛡   Prepare or refresh access", "setup"),
         Choice("🩺  Check the installation", "doctor"),
         Choice("🌐  Test browser + lucida.to", "doctor-live"),
+        Choice("🧹  Clean stale state and temporary files", "cleanup"),
         Choice("📂  Open the music folder", "openfolder"),
         Choice("📄  Open the last run log", "log"),
         Choice("← Back", "back"),
@@ -337,6 +400,15 @@ def _tools_action(console, cli, questionary) -> bool:
         return bool(asyncio.run(cli._setup()))
     if action in ("doctor", "doctor-live"):
         asyncio.run(cli._doctor(live=action == "doctor-live"))
+        return True
+    if action == "cleanup":
+        confirmed = questionary.confirm(
+            "Remove missing state entries and .part files older than 24 hours?",
+            default=True,
+        ).ask()
+        if not confirmed:
+            return False
+        cli._cleanup()
         return True
     if action == "openfolder":
         _open_path(paths.default_music_dir(), console)
