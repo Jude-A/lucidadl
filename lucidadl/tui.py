@@ -256,7 +256,7 @@ def _dispatch(action, s, console, cli, questionary) -> bool:
         if source == "remote":
             url = _ask_text(
                 questionary, "Playlist URL:",
-                "(public Apple Music, Spotify or Deezer link; empty = back)",
+                "(public streaming playlist link; empty = back)",
             )
             if not url:
                 return False

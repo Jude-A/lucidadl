@@ -7,7 +7,8 @@ from lucidadl.api import (
     LucidaClient, normalize_service, default_country, _long, _apple_tracks_from_obj,
     _apple_playlist_from_scripts, is_apple_playlist_url, playlist_source,
     _spotify_playlist_from_html, _spotify_total_from_html,
-    _deezer_playlist_from_obj, DOWNSCALE_CHOICES,
+    _deezer_playlist_from_obj, _tidal_playlist_from_html, _tidal_items_from_obj,
+    _amazon_playlist_from_html, _qobuz_playlist_from_obj, DOWNSCALE_CHOICES,
 )
 from lucidadl.models import FailedItem
 
@@ -48,6 +49,11 @@ check("public playlist source detection",
       playlist_source("https://music.apple.com/fr/playlist/mix/pl.123") == "apple"
       and playlist_source("https://open.spotify.com/playlist/abc?si=share") == "spotify"
       and playlist_source("https://www.deezer.com/fr/playlist/123") == "deezer"
+      and playlist_source("https://music.youtube.com/playlist?list=PL123") == "youtube"
+      and playlist_source("https://tidal.com/playlist/123") == "tidal"
+      and playlist_source("https://soundcloud.com/artist/sets/mix") == "soundcloud"
+      and playlist_source("https://open.qobuz.com/playlist/123") == "qobuz"
+      and playlist_source("https://music.amazon.com/user-playlists/123") == "amazon"
       and playlist_source("https://open.spotify.com/album/abc") == "")
 
 # long path (Windows)
@@ -130,6 +136,53 @@ check("deezer extractor keeps order, contributors and pagination",
           {"title": "First", "artist": "Primary, Guest"},
           {"title": "Again", "artist": "Primary"},
       ] and _deezer_next.endswith("/next"))
+
+_tidal_html = """<h1><a>My TIDAL Mix</a></h1>
+<list-item product-type="track"><span slot="title">First &amp; Last</span>
+<span slot="artist"><a>Primary</a><a>Guest</a></span></list-item>
+<list-item product-type="track"><span slot="title">Again</span>
+<span slot="artist"><a>Primary</a></span></list-item>"""
+_tidal_name, _tidal_tracks = _tidal_playlist_from_html(_tidal_html)
+check("tidal embed extractor keeps order and separates artists",
+      _tidal_name == "My TIDAL Mix" and _tidal_tracks == [
+          {"title": "First & Last", "artist": "Primary, Guest"},
+          {"title": "Again", "artist": "Primary"},
+      ])
+
+_tidal_page, _tidal_total, _tidal_read, _tidal_skipped = _tidal_items_from_obj({
+    "totalNumberOfItems": 2,
+    "items": [
+        {"type": "track", "item": {"title": "Song", "version": "Live",
+         "artists": [{"name": "One"}, {"name": "Two"}]}},
+        {"type": "video", "item": {"title": "Interview"}},
+    ],
+})
+check("tidal full extractor counts positions and skips videos explicitly",
+      _tidal_page == [{"title": "Song (Live)", "artist": "One, Two"}]
+      and (_tidal_total, _tidal_read, _tidal_skipped) == (2, 2, 1))
+
+_amazon_name, _amazon_tracks = _amazon_playlist_from_html("""
+<h1>Amazon Mix</h1><div>2 SONGS</div>
+<music-image-row index="1" primary-text="One's" secondary-text-1="Artist A"
+ primary-href="/albums/a?trackAsin=1">
+<music-image-row index="2" primary-text="One's" secondary-text-1="Artist A"
+ primary-href="/albums/a?trackAsin=1">
+""")
+check("amazon extractor validates count and preserves duplicate positions",
+      _amazon_name == "Amazon Mix" and len(_amazon_tracks) == 2
+      and _amazon_tracks[0] == _amazon_tracks[1])
+
+_qobuz_name, _qobuz_tracks, _qobuz_total, _qobuz_read = _qobuz_playlist_from_obj({
+    "name": "Qobuz Mix", "tracks_count": 1,
+    "tracks": {"total": 1, "items": [{
+        "title": "A Song", "version": "Acoustic",
+        "performer": {"name": "An Artist"},
+    }]},
+})
+check("qobuz extractor reads public API metadata and versions",
+      _qobuz_name == "Qobuz Mix"
+      and _qobuz_tracks == [{"title": "A Song (Acoustic)", "artist": "An Artist"}]
+      and (_qobuz_total, _qobuz_read) == (1, 1))
 
 # State dedup
 import tempfile
@@ -691,6 +744,28 @@ class _FakeBrowserContext:
         return False
 
 
+_youtube_list = _os.path.join(tempfile.gettempdir(), "lucidadl_youtube_playlist.txt")
+with _patch.object(_cli, "PLAYLIST_TEXT_PATH", _youtube_list), \
+     _patch.object(_cli, "lucida_context", return_value=_FakeBrowserContext()) as _yt_ctx, \
+     _patch.object(_cli, "get_page", _AsyncMock(return_value=object())), \
+     _patch.object(
+         _cli.api, "browser_playlist_tracklist",
+         _AsyncMock(return_value=(
+             "YouTube Mix", [{"artist": "Artist", "title": "Song"}]
+         )),
+     ) as _yt_reader:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _youtube_ok = _aio.run(_cli._playlist(
+            "https://music.youtube.com/playlist?list=PL123", True, "qobuz", None,
+            "original", tempfile.gettempdir(), False, 3))
+check("playlist: YouTube uses the complete browser reader",
+      _youtube_ok and _yt_ctx.called and _yt_reader.await_count == 1)
+try:
+    _os.remove(_youtube_list)
+except OSError:
+    pass
+
+
 _long_list = _os.path.join(tempfile.gettempdir(), "lucidadl_long_spotify.txt")
 with _patch.object(
         _cli.api, "public_playlist_tracklist",
@@ -712,6 +787,30 @@ check("playlist: long Spotify list switches to the browser reader",
       _long_ok and _long_ctx.called and _long_reader.await_count == 1)
 try:
     _os.remove(_long_list)
+except OSError:
+    pass
+
+_tidal_list = _os.path.join(tempfile.gettempdir(), "lucidadl_long_tidal.txt")
+with _patch.object(
+        _cli.api, "public_playlist_tracklist",
+        _AsyncMock(side_effect=_cli.api.TidalPlaylistWindow("Long TIDAL Mix"))), \
+     _patch.object(_cli, "PLAYLIST_TEXT_PATH", _tidal_list), \
+     _patch.object(_cli, "lucida_context", return_value=_FakeBrowserContext()) as _tidal_ctx, \
+     _patch.object(_cli, "get_page", _AsyncMock(return_value=object())), \
+     _patch.object(
+         _cli.api, "tidal_browser_tracklist",
+         _AsyncMock(return_value=(
+             "Long TIDAL Mix", [{"artist": "Artist", "title": "Song"}] * 75
+         )),
+     ) as _tidal_reader:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _tidal_ok = _aio.run(_cli._playlist(
+            "https://tidal.com/playlist/long", True, "qobuz", None,
+            "original", tempfile.gettempdir(), False, 3))
+check("playlist: long TIDAL list switches to the full browser session",
+      _tidal_ok and _tidal_ctx.called and _tidal_reader.await_count == 1)
+try:
+    _os.remove(_tidal_list)
 except OSError:
     pass
 
@@ -745,7 +844,7 @@ _help = _runner.invoke(_cli.cli, ["--help"])
 check("cli: developer debug command is hidden", "  debug " not in _help.output)
 _version = _runner.invoke(_cli.cli, ["--version"])
 check("cli: source version matches release metadata",
-      _version.exit_code == 0 and "1.3.1" in _version.output)
+      _version.exit_code == 0 and "1.4.0" in _version.output)
 
 print()
 if fails:
