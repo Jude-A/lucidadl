@@ -1,9 +1,13 @@
 """Offline self-test of the pure logic (no browser, no network)."""
 
+import asyncio as _aio
+
 from lucidadl import utils, matching
 from lucidadl.api import (
-    normalize_service, default_country, _long, _apple_tracks_from_obj, DOWNSCALE_CHOICES,
+    LucidaClient, normalize_service, default_country, _long, _apple_tracks_from_obj,
+    _apple_playlist_from_scripts, is_apple_playlist_url, DOWNSCALE_CHOICES,
 )
+from lucidadl.models import FailedItem
 
 fails = []
 
@@ -34,6 +38,10 @@ check("default_country qobuz=US", default_country("qobuz") == "US")
 check("default_country amazon=''", default_country("amazon") == "")
 check("default_country other=US", default_country("tidal") == "US")
 check("formats", DOWNSCALE_CHOICES[0] == "original" and "flac" in DOWNSCALE_CHOICES)
+check("Apple URL validation accepts playlists only",
+      is_apple_playlist_url("https://music.apple.com/fr/playlist/mix/pl.123")
+      and not is_apple_playlist_url("https://music.apple.com/fr/album/record/123")
+      and not is_apple_playlist_url("https://example.com/playlist/mix/pl.123"))
 
 # long path (Windows)
 import os as _os
@@ -52,6 +60,28 @@ out = []
 _apple_tracks_from_obj(sample, out)
 check("apple extractor: 2 songs, playlist node skipped",
       len(out) == 2 and out[0] == {"title": "Otherside", "artist": "RHCP"})
+
+_apple_name, _apple_structured = _apple_playlist_from_scripts([
+    "not-json",
+    __import__("json").dumps(sample),
+])
+check("apple structured extractor: playlist name + ordered songs",
+      _apple_name == "My PL" and _apple_structured == [
+          {"title": "Otherside", "artist": "RHCP"},
+          {"title": "Scar Tissue", "artist": "RHCP"},
+      ])
+
+_duplicate_sample = {"data": [{"type": "playlists", "attributes": {"name": "Loop"},
+                     "relationships": {"tracks": {"data": [
+                         {"type": "songs", "attributes": {
+                             "name": "Again", "artistName": "Artist"}},
+                         {"type": "songs", "attributes": {
+                             "name": "Again", "artistName": "Artist"}},
+                     ]}}}]}
+_duplicate_name, _duplicate_tracks = _apple_playlist_from_scripts([
+    __import__("json").dumps(_duplicate_sample)])
+check("apple structured extractor preserves intentional duplicate positions",
+      _duplicate_name == "Loop" and len(_duplicate_tracks) == 2)
 
 # State dedup
 import tempfile
@@ -93,6 +123,12 @@ check("legacy unscoped = done", s3.has("urlLegacy"))
 check("legacy scoped = re-download", not s3.has("urlLegacy", under=_pls))
 _os.remove(_pf)
 check("deleted playlist copy -> not done for that playlist", not s3.has("urlE", under=_pls))
+s3.done["gone"] = [_os.path.join(_d3, "missing.flac")]
+_removed_paths, _removed_items = s3.prune()
+check("state prune removes missing paths/items",
+      _removed_paths == 2 and _removed_items == 1 and "gone" not in s3.done
+      and s3.done.get("urlE") == [_af])
+check("state prune preserves unverifiable legacy entries", "urlLegacy" in s3.done)
 _sh0.rmtree(_d3, ignore_errors=True)
 
 # organize: album_dir + zip extraction/placement (no real tags -> Unknown)
@@ -213,6 +249,10 @@ check("m3u8: empty folder -> None (no file written)",
 check("_m3u_title strips 'NN - ' prefix and extension",
       _org._m3u_title("07 - Enfant Perdu.m4a") == "Enfant Perdu"
       and _org._m3u_title("No Prefix.flac") == "No Prefix")
+check("m3u8 numeric ordering survives mixed zero-padding",
+      sorted(["100 - Last.flac", "02 - Second.flac", "005 - Fifth.flac"],
+             key=_org._playlist_sort_key) ==
+      ["02 - Second.flac", "005 - Fifth.flac", "100 - Last.flac"])
 _sh.rmtree(_d5, ignore_errors=True)
 
 # downloader meta builders
@@ -303,6 +343,50 @@ check("variants: title-only + primary-artist forms",
       "PUKE SOMETHING" in _v2 and "Ptite Soeur PUKE SOMETHING" in _v2)
 check("variants: no separator -> just the line", _qv("Madonna") == ["Madonna"])
 
+from lucidadl.downloader import friendly_error as _friendly_error
+check("friendly error: access guidance", "lucida setup" in _friendly_error(Exception("HTTP 403")))
+check("friendly error: timeout retry guidance", "safe to retry" in _friendly_error(Exception("timed out")))
+
+from lucidadl.downloader import _playlist_download_key, _existing_playlist_copy
+_legacy_playlist_dir = tempfile.mkdtemp(prefix="lucidadl_playlist_state_")
+_legacy_file = _os.path.join(_legacy_playlist_dir, "02 - Song.flac")
+with open(_legacy_file, "wb") as _handle:
+    _handle.write(b"x")
+_legacy_state = utils.State(_os.path.join(_legacy_playlist_dir, "state.json"))
+_legacy_state.add("track-url", _legacy_file)
+check("playlist state: each duplicate position gets a distinct key",
+      _playlist_download_key("track-url", "Mix", "02") !=
+      _playlist_download_key("track-url", "Mix", "07"))
+check("playlist state: v1.1 copy recognized only at its original position",
+      _existing_playlist_copy(_legacy_state, "track-url", _legacy_playlist_dir, "02") ==
+      _legacy_file and
+      not _existing_playlist_copy(_legacy_state, "track-url", _legacy_playlist_dir, "07"))
+_sh0.rmtree(_legacy_playlist_dir, ignore_errors=True)
+
+from lucidadl.downloader import preview_tracks as _preview_tracks
+class _PreviewClient:
+    async def search(self, query, _service):
+        if "Missing" in query:
+            return {"tracks": []}
+        title = query.split(" - ", 1)[-1]
+        return {"tracks": [{"url": "https://qobuz/" + title, "title": title,
+                            "artist": "Artist", "context": title + " Artist"}]}
+
+    async def fetch_page_data(self, url, _country):
+        title = url.rsplit("/", 1)[-1]
+        return {"info": {"type": "track", "url": url, "title": title,
+                         "artists": [{"name": "Artist"}], "producers": ["p"]},
+                "token": "token", "tokenExpiry": 1}
+
+    tracks_from_pd = staticmethod(LucidaClient.tracks_from_pd)
+
+_preview = _aio.run(_preview_tracks(
+    _PreviewClient(), ["Artist - One", "Artist - Missing", "Artist - Two"],
+    "qobuz", "US", jobs=3, log=lambda *_: None))
+check("playlist check: preserves order and reports missing matches",
+      [row["index"] for row in _preview] == [1, 2, 3]
+      and [row["status"] for row in _preview] == ["matched", "not found", "matched"])
+
 _title_hits = [
     {"url": "wrong", "title": "Enfant Perdu", "artist": "Some Other Artist", "context": "Enfant Perdu Some Other Artist"},
     {"url": "right", "title": "Enfant Perdu", "artist": "Sinyo", "context": "Enfant Perdu Sinyo"},
@@ -328,7 +412,7 @@ check("transcode cmd has -b:a 192k",
 
 # fast HTTP path parsing (raw SvelteKit JSON5 blob -> tracks + helpers)
 import pyjson5
-from lucidadl.api import LucidaClient, _between, _filename_from_cd
+from lucidadl.api import _between, _filename_from_cd, _retry_delay
 _alb = ('{info:{success:true,type:"album",title:"Cal",tracks:['
         '{title:"A",url:"https://q/track/1",csrf:"C1",csrfFallback:"F1",producers:["p"]},'
         '{title:"B",url:"https://q/track/2",csrf:"C2",csrfFallback:null,producers:null}'
@@ -345,8 +429,11 @@ check("_between slices blob",
 check("filename from content-disposition",
       _filename_from_cd('attachment; filename="01 - Song.flac"') == "01 - Song.flac")
 
+class _RetryResponse:
+    headers = {"Retry-After": "99"}
+check("network retry delay is bounded", _retry_delay(_RetryResponse(), 0) == 30)
+
 # refresh dedup: N concurrent 403-refreshes must call acquire() exactly once
-import asyncio as _aio
 _calls = {"n": 0}
 async def _fake_acquire():
     _calls["n"] += 1
@@ -372,6 +459,9 @@ from lucidadl import cli as _cli
 with _patch.object(_cli, "chromium_installed", _AsyncMock(return_value=True)), \
      _patch.object(_cli.transcode, "available", return_value=True), \
      _patch.object(_cli, "load_clearance", return_value=("CF", "UA")), \
+     _patch.object(_cli, "_music_health", return_value=(True, "ready")), \
+     _patch.object(_cli, "_stale_partials", return_value=[]), \
+     _patch.object(_cli, "_load_playlist_run", return_value={}), \
      _patch.object(_cli, "lucida_context") as _browser_ctx:
     _doctor_out = _io.StringIO()
     with _ctxlib.redirect_stdout(_doctor_out):
@@ -389,28 +479,66 @@ check("setup: installs a missing browser before preparing access",
 
 with _patch.object(_tui.os.path, "exists", return_value=False):
     check("tui: empty app data is detected as first run", _tui._is_first_run())
+with _patch.object(_tui, "load_clearance", return_value=(None, None)):
+    check("tui: corrupt/empty access is not shown as prepared", not _tui._access_ready())
+with _patch.object(_tui, "load_clearance", return_value=("CF", "UA")):
+    check("tui: complete access is shown as prepared", _tui._access_ready())
 
 # corrupt or hand-edited settings must not prevent the TUI from starting
 with _patch.object(_tui.paths, "load_config", return_value={"jobs": "many"}):
     check("tui: invalid jobs setting falls back safely", _tui._settings()["jobs"] == 3)
 
+# ordinary downloads use the shared runner without depending on playlist-only locals
+class _TuiConsole:
+    def print(self, *_args, **_kwargs):
+        pass
+
+
+class _TuiCli:
+    @staticmethod
+    async def _run(*_args, **_kwargs):
+        return {"ok": 1, "skip": 0, "fail": 0}, []
+
+
+def _invoke_tui_go(_s, _console, _cli_obj, _questionary, go):
+    go(["Artist - Song"], "track", False)
+    return True
+
+
+with _patch.object(_tui, "_download_action", side_effect=_invoke_tui_go), \
+     _patch.object(_tui, "_access_ready", return_value=True), \
+     _patch.object(_tui, "_show_run_summary"):
+    _tui_download_ok = _tui._dispatch(
+        "download",
+        {"service": "qobuz", "jobs": 1, "to": None, "bitrate": None,
+         "keep_orig": False, "force": False},
+        _TuiConsole(), _TuiCli(), object(),
+    )
+check("tui: ordinary downloads do not depend on playlist choices", _tui_download_ok)
+
 # failures preserve album/track intent, while old files stay backwards-compatible
 _failed_dir = tempfile.mkdtemp(prefix="lucidadl_failed_")
 _failed_path = _os.path.join(_failed_dir, "failed.txt")
-with _patch.object(_cli, "FAILED_PATH", _failed_path):
+_playlist_run_path = _os.path.join(_failed_dir, "playlist-run.json")
+with _patch.object(_cli, "FAILED_PATH", _failed_path), \
+     _patch.object(_cli, "PLAYLIST_RUN_PATH", _playlist_run_path):
     _cli._write_failed([("album", "Artist - Album"), ("track", "Artist - Song")])
     check("retry: typed failures round-trip", _cli._read_failed() == [
-        ("album", "Artist - Album"), ("track", "Artist - Song")])
+        FailedItem("album", "Artist - Album"), FailedItem("track", "Artist - Song")])
+    _cli._write_failed([
+        FailedItem("track", "Artist - Playlist Song", "My Mix", "07")])
+    check("retry: playlist context round-trips", _cli._read_failed() == [
+        FailedItem("track", "Artist - Playlist Song", "My Mix", "07")])
     with open(_failed_path, "w", encoding="utf-8") as _legacy:
         _legacy.write("Legacy Artist - Song\n")
     check("retry: legacy failures remain track retries",
-          _cli._read_failed() == [("track", "Legacy Artist - Song")])
+          _cli._read_failed() == [FailedItem("track", "Legacy Artist - Song")])
 
     _retry_calls = []
     async def _fake_retry_run(values, kind, *args, **kwargs):
         _retry_calls.append((kind, values))
         if kind == "track":
-            return ({"ok": 0, "skip": 0, "fail": 1}, [("track", values[0])])
+            return ({"ok": 0, "skip": 0, "fail": 1}, [FailedItem("track", values[0])])
         return ({"ok": 1, "skip": 0, "fail": 0}, [])
 
     with _patch.object(_cli, "_run", side_effect=_fake_retry_run):
@@ -420,10 +548,49 @@ with _patch.object(_cli, "FAILED_PATH", _failed_path):
                 "qobuz", None, "original", _failed_dir, False, 3))
     check("retry: albums and tracks are dispatched with their original type",
           _retry_calls == [
-              ("track", ["Artist - Song"]), ("album", ["Artist - Album"])])
+              ("album", ["Artist - Album"]), ("track", ["Artist - Song"])])
     check("retry: only unresolved items remain",
-          _retry_result[1] == [("track", "Artist - Song")]
-          and _cli._read_failed() == [("track", "Artist - Song")])
+          _retry_result[1] == [FailedItem("track", "Artist - Song")]
+          and _cli._read_failed() == [FailedItem("track", "Artist - Song")])
+
+    _playlist_retry = []
+    async def _fake_playlist_retry(values, kind, *args, **kwargs):
+        _playlist_retry.append((values, kind, kwargs))
+        return ({"ok": 1, "skip": 0, "fail": 0}, [])
+
+    with _patch.object(_cli, "_run", side_effect=_fake_playlist_retry):
+        with _ctxlib.redirect_stdout(_io.StringIO()):
+            _aio.run(_cli._retry(
+                [FailedItem("track", "Artist - Song", "My Mix", "07")],
+                "qobuz", None, "original", _failed_dir, False, 3))
+    check("retry: playlist stays in its collection with original number",
+          len(_playlist_retry) == 1
+          and _playlist_retry[0][2].get("collection") == "My Mix"
+          and _playlist_retry[0][2].get("track_numbers") == ["07"])
+
+    _interrupted = {
+        "status": "running", "collection": "Interrupted Mix",
+        "tracks": [
+            {"track_no": "01", "query": "Artist - One"},
+            {"track_no": "02", "query": "Artist - Two"},
+        ],
+        "options": {"service": "amazon", "out": _failed_dir, "jobs": 5},
+    }
+    _cli._save_playlist_run(_interrupted)
+    _resume_calls = []
+    async def _fake_resume(values, kind, *args, **kwargs):
+        _resume_calls.append((values, kind, args, kwargs))
+        return ({"ok": 1, "skip": 1, "fail": 0}, [])
+    with _patch.object(_cli, "_run", side_effect=_fake_resume):
+        with _ctxlib.redirect_stdout(_io.StringIO()):
+            _aio.run(_cli._resume_playlist_run(_cli._pending_playlist_run()))
+    check("playlist recovery: interrupted run resumes full ordered list",
+          len(_resume_calls) == 1
+          and _resume_calls[0][0] == ["Artist - One", "Artist - Two"]
+          and _resume_calls[0][3].get("track_numbers") == ["01", "02"]
+          and _resume_calls[0][3].get("collection") == "Interrupted Mix")
+    check("playlist recovery: successful resume marked complete",
+          _cli._load_playlist_run().get("status") == "complete")
 _sh0.rmtree(_failed_dir)
 
 # unsupported playlist URLs fail immediately without launching Playwright
@@ -434,6 +601,14 @@ with _patch.object(_cli, "lucida_context") as _playlist_browser:
             tempfile.gettempdir(), False, 3))
 check("playlist: unsupported links fail before opening a browser",
       not _unsupported_ok and not _playlist_browser.called)
+
+check("playlist: failures before download retain recovery context",
+      _cli._failed_result(
+          ["Artist - One", "Artist - Two"], "track", "My Mix", ["01", "02"]
+      )[1] == [
+          FailedItem("track", "Artist - One", "My Mix", "01"),
+          FailedItem("track", "Artist - Two", "My Mix", "02"),
+      ])
 
 # command contracts used by scripts: missing input/search failure must be non-zero,
 # while an explicit search cancellation remains a normal successful exit
@@ -455,6 +630,9 @@ check("search: explicit cancellation returns exit 0", _search_cancelled.exit_cod
 
 _help = _runner.invoke(_cli.cli, ["--help"])
 check("cli: developer debug command is hidden", "  debug " not in _help.output)
+_version = _runner.invoke(_cli.cli, ["--version"])
+check("cli: source version matches release metadata",
+      _version.exit_code == 0 and "1.2.0" in _version.output)
 
 print()
 if fails:

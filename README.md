@@ -10,8 +10,8 @@ commands and an interactive terminal interface.
 
 lucidadl downloads tracks and albums in parallel, organizes them from their metadata,
 can convert them locally with ffmpeg, accepts large `.txt` batches, and imports public
-Apple Music playlists. It intentionally remains a lightweight personal tool rather than
-a music-library platform.
+Apple Music playlists with match checking and reliable resume. It intentionally remains
+a lightweight personal tool rather than a music-library or streaming-account platform.
 
 > Use lucidadl only for content you are entitled to download. You are responsible for
 > complying with applicable law and with the terms of the services involved. This
@@ -26,7 +26,8 @@ a music-library platform.
 - FLAC source downloads and optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion.
 - Tag-based organization under `Artists/<Artist>/<Album>/`.
 - Batch downloads from any `.txt` file, without modifying the source list.
-- Public Apple Music playlist import with ordered tracks and a portable `.m3u8` file.
+- Public Apple Music playlist import with match checking, resume, ordered tracks, and a
+  portable `.m3u8` file.
 - Existence-aware deduplication, safe matching, and one-command retry for failures.
 - Guided first-run setup, diagnostics, progress bars, and a compact interactive menu.
 
@@ -109,7 +110,27 @@ Preview the extraction without downloading anything:
 lucida playlist "https://music.apple.com/.../pl.xxxxxxxx" --dry-run
 ```
 
-Apple Music is currently the only supported playlist source.
+To verify what lucidadl will select on Qobuz or Amazon before starting a large download:
+
+```bash
+lucida playlist "https://music.apple.com/.../pl.xxxxxxxx" --check
+```
+
+The extracted list is saved in lucidadl's application-data folder. If a title is
+ambiguous or unavailable, edit that file (or remove the line), then download the reviewed
+version while preserving playlist order:
+
+```bash
+lucida playlist-file "C:/path/to/playlist.txt" --name "My playlist"
+```
+
+If a playlist is interrupted, `lucida retry` resumes it with its original folder,
+settings, and track numbers. Existing files are skipped, and the `.m3u8` is rebuilt when
+the run finishes. Repeating the same song at two different positions is supported.
+
+Apple Music remains the only remote playlist source. Cross-service playlist translation
+and account authorization intentionally belong in a separate companion project rather
+than in this downloader.
 
 ## Interactive menu
 
@@ -124,7 +145,7 @@ Run `lucida` without arguments (or `lucida ui`):
 
 ► What do you want to do?
   ⬇   Download music
-  🎶  Import an Apple Music playlist
+  🎶  Playlists — Apple Music or an edited list
   📄  Download from a .txt file
   ⚙   Settings
   🧰  Help, access and diagnostics
@@ -193,13 +214,14 @@ again and refreshes it.
 lucida doctor          # quick local check; never opens a browser
 lucida doctor --live   # browser and lucida.to connectivity check
 lucida setup           # install/repair Chromium and refresh access
-lucida retry           # retry only unresolved items from the previous run
+lucida retry           # retry failures or resume an interrupted playlist
+lucida cleanup         # prune stale state and old partial downloads
 ```
 
-Failed tracks and albums retain their original type. Automated and scheduled commands
-return a non-zero status while work remains unresolved. The latest details are stored in
-`run.log`; `lucida config` prints its exact location along with all other application
-paths.
+Failed tracks and albums retain their original type; playlist failures also retain their
+folder and original position. Automated and scheduled commands return a non-zero status
+while work remains unresolved. The latest details are stored in `run.log`; `lucida
+config` prints its exact location along with the extracted playlist and recovery data.
 
 Common fixes:
 
@@ -223,8 +245,8 @@ renewed.
 
 ## Application data
 
-The browser profile, access data, configuration, deduplication state, last log, and
-failed-item list are stored outside the repository:
+The browser profile, access data, configuration, deduplication state, last log,
+failed-item list, and playlist recovery data are stored outside the repository:
 
 - Windows: `%LOCALAPPDATA%\lucidadl`
 - Linux: `~/.local/share/lucidadl`

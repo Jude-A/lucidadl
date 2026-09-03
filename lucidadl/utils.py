@@ -143,3 +143,34 @@ class State:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({"done": self.done}, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
+
+    def prune(self) -> tuple[int, int]:
+        """Forget recorded file paths that no longer exist.
+
+        URL-only legacy entries are retained because their location cannot be checked.
+        Returns ``(removed_paths, removed_items)``.
+        """
+        removed_paths = 0
+        removed_items = 0
+        changed = False
+        with self._lock:
+            for key in list(self.done):
+                old = self.done[key]
+                if not old:  # oldest state format: keep its conservative dedup behaviour
+                    continue
+                live = [path for path in old if _path_exists(path)]
+                removed_paths += len(old) - len(live)
+                if live:
+                    if live != old:
+                        self.done[key] = live
+                        changed = True
+                else:
+                    del self.done[key]
+                    removed_items += 1
+                    changed = True
+            if changed:
+                tmp = self.path + f".{os.getpid()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"done": self.done}, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.path)
+        return removed_paths, removed_items

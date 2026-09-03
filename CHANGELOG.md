@@ -6,6 +6,38 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-03
+
+### Added
+- `lucida playlist URL --check` resolves every Apple Music title through the normal
+  Qobuz/Amazon matching path without downloading, and clearly lists unresolved entries.
+- `lucida playlist-file FILE --name "My playlist"` turns a reviewed or edited text list
+  into the same ordered playlist folder and portable `.m3u8` output.
+- `lucida cleanup` removes stale download-state references and `.part` files older than
+  24 hours without touching completed audio.
+
+### Changed
+- Interrupted playlist downloads now retain their source order, destination, settings,
+  and collection name. `lucida retry` resumes the complete saved run while skipping files
+  already present; ordinary playlist failures retry directly into the original playlist
+  at their original track numbers.
+- Apple Music extraction now uses stable semantic page attributes alongside the existing
+  visual-list reader, with a structured-data fallback and clearer private, missing, and
+  region-unavailable diagnostics.
+- Duplicate occurrences of the same song are preserved as distinct playlist positions.
+  Existing 1.1 playlist files are recognized and migrated lazily without re-downloading.
+- Playlist `.m3u8` files are written atomically and sort track numbers numerically even
+  when an updated playlist changes its zero-padding width.
+- Temporary network and server errors use bounded retries and `Retry-After`; permanent
+  request failures stop sooner, incomplete response bodies never become finished files,
+  and common failures now include a useful next step.
+- Extracted Apple Music lists are saved under the application data directory rather than
+  silently overwriting `inputs/playlist.txt` in the current working directory.
+- The interactive playlist flow now offers download/resume, match checking, extraction,
+  and reviewed text-list import as explicit choices.
+- `lucida doctor` verifies that the music folder is writable and reports stale partial
+  files or an interrupted playlist waiting to be resumed.
+
 ## [1.1.0] - 2026-09-03
 
 ### Added
@@ -90,7 +122,8 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Jude-A/lucidadl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...v1.0.0
 [0.1.1]: https://github.com/Jude-A/lucidadl/compare/v0.1.0...v0.1.1
