@@ -683,6 +683,38 @@ try:
 except OSError:
     pass
 
+class _FakeBrowserContext:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+_long_list = _os.path.join(tempfile.gettempdir(), "lucidadl_long_spotify.txt")
+with _patch.object(
+        _cli.api, "public_playlist_tracklist",
+        _AsyncMock(side_effect=_cli.api.SpotifyPlaylistWindow("Long Mix", 150))), \
+     _patch.object(_cli, "PLAYLIST_TEXT_PATH", _long_list), \
+     _patch.object(_cli, "lucida_context", return_value=_FakeBrowserContext()) as _long_ctx, \
+     _patch.object(_cli, "get_page", _AsyncMock(return_value=object())), \
+     _patch.object(
+         _cli.api, "spotify_browser_tracklist",
+         _AsyncMock(return_value=(
+             "Long Mix", [{"artist": "Artist", "title": "Song"}] * 150
+         )),
+     ) as _long_reader:
+    with _ctxlib.redirect_stdout(_io.StringIO()):
+        _long_ok = _aio.run(_cli._playlist(
+            "https://open.spotify.com/playlist/long", True, "qobuz", None,
+            "original", tempfile.gettempdir(), False, 3))
+check("playlist: long Spotify list switches to the browser reader",
+      _long_ok and _long_ctx.called and _long_reader.await_count == 1)
+try:
+    _os.remove(_long_list)
+except OSError:
+    pass
+
 check("playlist: failures before download retain recovery context",
       _cli._failed_result(
           ["Artist - One", "Artist - Two"], "track", "My Mix", ["01", "02"]
@@ -713,7 +745,7 @@ _help = _runner.invoke(_cli.cli, ["--help"])
 check("cli: developer debug command is hidden", "  debug " not in _help.output)
 _version = _runner.invoke(_cli.cli, ["--version"])
 check("cli: source version matches release metadata",
-      _version.exit_code == 0 and "1.3.0" in _version.output)
+      _version.exit_code == 0 and "1.3.1" in _version.output)
 
 print()
 if fails:

@@ -9,8 +9,9 @@ Flow (all httpx, like the Rust jelni client):
   start_download(track)   -> POST /api/load -> {handoff, server}
   run_job(handoff,server) -> poll <server>.lucida.to (Cloudflare-free) -> stream file
 
-Public Spotify and Deezer playlist metadata is read directly over HTTP. Apple Music
-still needs a Playwright page because its public track list is rendered dynamically.
+Public Spotify and Deezer playlist metadata is normally read directly over HTTP.
+Apple Music and Spotify playlists beyond the public player's first window use a
+Playwright page because their complete track lists are rendered dynamically.
 """
 
 from __future__ import annotations
@@ -56,6 +57,16 @@ _EXT_BY_CTYPE = {
 
 class LucidaError(RuntimeError):
     pass
+
+
+class SpotifyPlaylistWindow(LucidaError):
+    """The fast public player exposed only its first 100 playlist items."""
+
+    def __init__(self, name: str, total: int):
+        self.name = name
+        self.total = total
+        detail = f"100 of {total} titles" if total else "its first 100 titles"
+        super().__init__(f"Spotify's public player exposed {detail}")
 
 
 def _retry_delay(response, attempt: int) -> int:
@@ -520,12 +531,126 @@ async def spotify_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, st
         public = await _public_get(f"https://open.spotify.com/playlist/{playlist_id}")
         total = _spotify_total_from_html(public.text)
         if total and total > len(tracks):
-            raise LucidaError(
-                f"Spotify exposes only the first 100 of {total} titles publicly. "
-                "Export the complete playlist to a text file, then use `playlist-file`."
-            )
+            raise SpotifyPlaylistWindow(name, total)
         if total is None:
-            log("  Spotify returned 100 titles; a longer public playlist may be truncated")
+            raise SpotifyPlaylistWindow(name, 0)
+    return name, tracks
+
+
+_SPOTIFY_VISIBLE_ROWS_JS = """() => {
+    const grid = document.querySelector('[data-testid="playlist-tracklist"][role="grid"]');
+    if (!grid) return [];
+    return Array.from(grid.querySelectorAll('[role="row"][aria-rowindex]')).map(row => {
+        const position = Number(row.getAttribute('aria-rowindex')) - 1;
+        const track = row.querySelector(
+            'a[data-testid="internal-track-link"], a[href*="/track/"]'
+        );
+        const episode = row.querySelector('a[href*="/episode/"]');
+        const artists = Array.from(row.querySelectorAll(
+            '[role="gridcell"][aria-colindex="2"] a[href*="/artist/"]'
+        )).map(node => (node.textContent || '').trim()).filter(Boolean);
+        return {
+            position,
+            kind: track ? 'track' : (episode ? 'episode' : 'pending'),
+            title: track ? (track.textContent || '').trim() : '',
+            artist: [...new Set(artists)].join(', '),
+        };
+    });
+}"""
+
+_SPOTIFY_SCROLL_JS = """target => {
+    const grid = document.querySelector('[data-testid="playlist-tracklist"][role="grid"]');
+    if (!grid) return null;
+    let node = grid.parentElement;
+    while (node && !(node.scrollHeight > node.clientHeight + 50 &&
+           ['auto', 'scroll'].includes(getComputedStyle(node).overflowY))) {
+        node = node.parentElement;
+    }
+    if (!node) return null;
+    node.scrollTop = Math.min(target, node.scrollHeight - node.clientHeight);
+    node.dispatchEvent(new Event('scroll', {bubbles: true}));
+    return {top: node.scrollTop, height: node.scrollHeight, viewport: node.clientHeight};
+}"""
+
+
+async def spotify_browser_tracklist(page, url: str, name: str, total: int,
+                                     log=print) -> Tuple[str, List[Dict[str, str]]]:
+    """Read a long public playlist by scrolling Spotify's own paginated web view."""
+    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    try:
+        await page.wait_for_selector(
+            '[data-testid="playlist-tracklist"] a[href*="/track/"]', timeout=30_000
+        )
+        await page.wait_for_function("""() => {
+            const grid = document.querySelector(
+                '[data-testid="playlist-tracklist"][role="grid"]'
+            );
+            let node = grid && grid.parentElement;
+            while (node && !(node.scrollHeight > node.clientHeight + 50 &&
+                   ['auto', 'scroll'].includes(getComputedStyle(node).overflowY))) {
+                node = node.parentElement;
+            }
+            return Boolean(node);
+        }""", timeout=30_000)
+    except Exception as exc:
+        raise LucidaError("Spotify's public track list did not become available") from exc
+
+    try:
+        rendered_count = await page.locator(
+            '[data-testid="playlist-tracklist"]'
+        ).get_attribute("aria-rowcount")
+        rendered_total = max(0, int(rendered_count or 0) - 1)
+    except (TypeError, ValueError):
+        rendered_total = 0
+    if rendered_total:
+        total = rendered_total
+    if not total:
+        raise LucidaError("Spotify's public playlist size could not be determined")
+
+    found: Dict[int, Dict[str, str]] = {}
+    observed = set()
+    target = 0
+    last_top = -1
+    stagnant = 0
+    reported = 0
+    while len(observed) < total and stagnant < 5:
+        rows = await page.evaluate(_SPOTIFY_VISIBLE_ROWS_JS)
+        for row in rows or []:
+            position = row.get("position")
+            if not isinstance(position, int) or position < 1 or position > total:
+                continue
+            if row.get("kind") not in ("track", "episode"):
+                continue
+            observed.add(position)
+            if row.get("kind") == "track" and row.get("title") and row.get("artist"):
+                found[position] = {
+                    "title": " ".join(str(row["title"]).split()),
+                    "artist": " ".join(str(row["artist"]).split()),
+                }
+        metrics = await page.evaluate(_SPOTIFY_SCROLL_JS, target)
+        if not metrics:
+            raise LucidaError("Spotify's public playlist could not be scrolled")
+        top = int(metrics.get("top") or 0)
+        if top == last_top:
+            stagnant += 1
+        else:
+            stagnant = 0
+            last_top = top
+        if len(observed) >= reported + 100:
+            reported = len(observed) // 100 * 100
+            log(f"  read {len(observed)} of {total} Spotify positions")
+        step = max(400, int(metrics.get("viewport") or 700) * 3 // 4)
+        target = min(target + step,
+                     int(metrics.get("height") or 0) - int(metrics.get("viewport") or 0))
+        await page.wait_for_timeout(250)
+
+    if len(observed) < total:
+        raise LucidaError(
+            f"Spotify exposed only {len(observed)} of {total} playlist positions"
+        )
+    tracks = [found[position] for position in sorted(found)]
+    if not tracks:
+        raise LucidaError("Spotify's public playlist contained no music tracks")
     return name, tracks
 
 

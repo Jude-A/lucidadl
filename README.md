@@ -133,10 +133,10 @@ settings, and track numbers. Existing files are skipped, and the `.m3u8` is rebu
 the run finishes. Repeating the same song at two different positions is supported.
 
 Only public playlists are read: lucidadl does not connect to or modify an Apple Music,
-Spotify, or Deezer account. Spotify's public player exposes at most 100 items; when the
-declared playlist is longer, lucidadl stops with an explicit message instead of importing
-an incomplete list. Cross-service playlist translation and account authorization remain
-the responsibility of a separate companion project.
+Spotify, or Deezer account. Short Spotify playlists use the fast public player; longer
+ones automatically switch to a headless browser and scroll Spotify's public list until
+every position has been read. Cross-service playlist translation and account
+authorization remain the responsibility of a separate companion project.
 
 ## Interactive menu
 

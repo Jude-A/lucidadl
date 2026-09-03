@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-09-03
+
+### Fixed
+- Spotify playlists longer than 100 items now switch to the complete public web view and
+  read every position instead of stopping at the public player's initial window.
+
 ## [1.3.0] - 2026-09-03
 
 ### Added
@@ -139,7 +145,8 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/Jude-A/lucidadl/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Jude-A/lucidadl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...v1.1.0

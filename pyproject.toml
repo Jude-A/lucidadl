@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lucidadl"
-version = "1.3.0"
+version = "1.3.1"
 description = "Fast, parallel CLI music downloader for lucida.to with resilient public playlist imports."
 readme = "README.md"
 requires-python = ">=3.10"

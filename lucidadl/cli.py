@@ -748,7 +748,17 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
                 name, tracks = await _scrape(headless=False)
         else:
             click.echo(f"Reading the public {playlist_source_name(source)} playlist…")
-            name, tracks = await api.public_playlist_tracklist(url, click.echo)
+            try:
+                name, tracks = await api.public_playlist_tracklist(url, click.echo)
+            except api.SpotifyPlaylistWindow as limited:
+                detail = (f"reports {limited.total} titles" if limited.total
+                          else "returned its 100-item public window")
+                click.echo(f"Spotify {detail} — reading the full list in a headless browser…")
+                async with lucida_context(headless=True) as ctx:
+                    page = await get_page(ctx)
+                    name, tracks = await api.spotify_browser_tracklist(
+                        page, url, limited.name, limited.total, click.echo
+                    )
     except BrowserClosed:
         click.secho(_CLOSED_HINT, fg="red")
         return False
