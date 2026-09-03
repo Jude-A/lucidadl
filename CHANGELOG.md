@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-03
+
+### Added
+- Public Spotify playlists can now use the complete `playlist`, `--dry-run`, `--check`,
+  correction, download, and resume workflow without a Spotify login or API key.
+- Public Deezer playlists use the same workflow, including pagination for large lists.
+
+### Changed
+- Playlist source detection is automatic from the pasted URL. The CLI and TUI now offer
+  one streaming-playlist entry point for Apple Music, Spotify, and Deezer.
+- Spotify imports detect the public player's 100-item window and refuse a known partial
+  import, directing the user to `playlist-file` instead of silently losing tracks.
+- Spotify podcast episodes are ignored because lucidadl's matching and download flow is
+  intentionally music-only.
+- Automatic matching now rejects clearly labelled alternate versions and cover results
+  where the requested performer is only a secondary credit.
+
 ## [1.2.0] - 2026-09-03
 
 ### Added
@@ -122,7 +139,8 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Jude-A/lucidadl/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Jude-A/lucidadl/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Jude-A/lucidadl/compare/v0.1.1...v1.0.0

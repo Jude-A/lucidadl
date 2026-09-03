@@ -62,8 +62,8 @@ async def _resolve_url(client: LucidaClient, line: str, service: str, kind: str,
             items = res.get(bucket) or []
             if not items:
                 continue
-            # The full query keeps its lenient match; broadened variants must match the
-            # artist, so a title-only search can't silently grab the wrong artist.
+            # Automatic matching always checks the primary artist. Broadened variants
+            # request it explicitly too, keeping the intent obvious at the call site.
             url = matching.pick_best(
                 line, items, require_artist=(v_idx > 0),
                 min_score=5.5 if explicit_artist else None,

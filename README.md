@@ -10,13 +10,14 @@ commands and an interactive terminal interface.
 
 lucidadl downloads tracks and albums in parallel, organizes them from their metadata,
 can convert them locally with ffmpeg, accepts large `.txt` batches, and imports public
-Apple Music playlists with match checking and reliable resume. It intentionally remains
-a lightweight personal tool rather than a music-library or streaming-account platform.
+Apple Music, Spotify, and Deezer playlists with match checking and reliable resume. It
+intentionally remains a lightweight personal tool rather than a music-library or
+streaming-account platform.
 
 > Use lucidadl only for content you are entitled to download. You are responsible for
 > complying with applicable law and with the terms of the services involved. This
-> project is not affiliated with lucida.to, Apple, Qobuz, Amazon, or any streaming
-> service.
+> project is not affiliated with lucida.to, Apple, Spotify, Deezer, Qobuz, Amazon,
+> or any streaming service.
 
 ## Highlights
 
@@ -26,8 +27,8 @@ a lightweight personal tool rather than a music-library or streaming-account pla
 - FLAC source downloads and optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion.
 - Tag-based organization under `Artists/<Artist>/<Album>/`.
 - Batch downloads from any `.txt` file, without modifying the source list.
-- Public Apple Music playlist import with match checking, resume, ordered tracks, and a
-  portable `.m3u8` file.
+- Public Apple Music, Spotify, and Deezer playlist imports with match checking, resume,
+  ordered tracks, and a portable `.m3u8` file.
 - Existence-aware deduplication, safe matching, and one-command retry for failures.
 - Guided first-run setup, diagnostics, progress bars, and a compact interactive menu.
 
@@ -94,15 +95,18 @@ The source file is never edited. Already downloaded items are skipped unless `--
 is used. When `--file` is omitted, the plural commands use `./inputs/tracks.txt` or
 `./inputs/albums.txt`; ready-to-copy examples are included in the repository.
 
-### 3. A public Apple Music playlist
+### 3. A public streaming playlist
 
 ```bash
 lucida playlist "https://music.apple.com/.../pl.xxxxxxxx"
+lucida playlist "https://open.spotify.com/playlist/xxxxxxxx"
+lucida playlist "https://www.deezer.com/playlist/xxxxxxxx"
 ```
 
-lucidadl reads the public Apple Music page, resolves each track through lucida.to, and
-stores the result under `Playlists/<playlist name>/`. An `.m3u8` file is written beside
-the tracks so players and devices recognize the folder as an actual playlist.
+lucidadl detects the service from the URL, reads its public track list, resolves each
+title through lucida.to, and stores the result under `Playlists/<playlist name>/`. An
+`.m3u8` file is written beside the tracks so players and devices recognize the folder as
+an actual playlist.
 
 Preview the extraction without downloading anything:
 
@@ -128,9 +132,11 @@ If a playlist is interrupted, `lucida retry` resumes it with its original folder
 settings, and track numbers. Existing files are skipped, and the `.m3u8` is rebuilt when
 the run finishes. Repeating the same song at two different positions is supported.
 
-Apple Music remains the only remote playlist source. Cross-service playlist translation
-and account authorization intentionally belong in a separate companion project rather
-than in this downloader.
+Only public playlists are read: lucidadl does not connect to or modify an Apple Music,
+Spotify, or Deezer account. Spotify's public player exposes at most 100 items; when the
+declared playlist is longer, lucidadl stops with an explicit message instead of importing
+an incomplete list. Cross-service playlist translation and account authorization remain
+the responsibility of a separate companion project.
 
 ## Interactive menu
 
@@ -145,7 +151,7 @@ Run `lucida` without arguments (or `lucida ui`):
 
 ► What do you want to do?
   ⬇   Download music
-  🎶  Playlists — Apple Music or an edited list
+  🎶  Playlists — streaming link or an edited list
   📄  Download from a .txt file
   ⚙   Settings
   🧰  Help, access and diagnostics

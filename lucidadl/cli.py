@@ -15,7 +15,7 @@ import click
 from . import __version__
 from . import api, organize, paths, progress, transcode, utils
 from .api import (LucidaClient, default_country, normalize_service, DOWNSCALE_CHOICES,
-                  is_apple_playlist_url, LUCIDA)
+                  playlist_source, playlist_source_name, LUCIDA)
 from .downloader import preview_tracks, run_batch
 from .models import FailedItem
 from .session import (lucida_context, ensure_cleared, get_page, BrowserClosed,
@@ -560,7 +560,7 @@ def search_cmd(query, service, country, downscale, out, organize_on, jobs,
         _exit_if_failed(result)
 
 
-# --- Apple Music playlist import -------------------------------------------
+# --- public playlist import -------------------------------------------------
 
 def _render_playlist(collection: str, tracks: list, dry_run: bool) -> None:
     """Compact, pretty playlist summary: a rich table for --dry-run, a single header
@@ -717,42 +717,52 @@ async def _download_playlist_items(collection: str, items: List[str], source: st
 async def _playlist(url, dry_run, service, country, downscale, out, hidden,
                      jobs, organize_on=True, to_fmt=None, bitrate=None, keep_orig=False,
                      force=False, check_matches=False) -> bool:
-    if not is_apple_playlist_url(url):
-        click.secho("Only public Apple Music playlist links are supported.", fg="red")
+    source = playlist_source(url)
+    if not source:
+        click.secho(
+            "Paste a public Apple Music, Spotify, or Deezer playlist link.", fg="red"
+        )
         return False
 
     name, tracks = "", []
-
-    async def _scrape(headless: bool):
-        # Apple Music is NOT behind Cloudflare, so the tracklist can be scraped headless
-        # (no visible window). `hidden` only matters for the headed fallback.
-        async with lucida_context(headless=headless,
-                                  hidden=(hidden and not headless)) as ctx:
-            page = await get_page(ctx)
-            return await api.playlist_tracklist(page, url, click.echo)
-
     try:
-        click.echo("Reading the playlist (headless browser)…")
-        try:
-            name, tracks = await _scrape(headless=True)
-        except BrowserClosed:
-            raise
-        except Exception as e:
-            click.secho(f"  headless: {e}", fg="yellow")  # fall through to the headed retry
-        if not tracks:
-            click.secho("Headless unsuccessful — retrying with a visible window…",
-                        fg="yellow")
-            name, tracks = await _scrape(headless=False)
+        if source == "apple":
+            async def _scrape(headless: bool):
+                # Apple Music uses a dynamic page, so it still needs Playwright. `hidden`
+                # only matters for the visible fallback.
+                async with lucida_context(headless=headless,
+                                          hidden=(hidden and not headless)) as ctx:
+                    page = await get_page(ctx)
+                    return await api.playlist_tracklist(page, url, click.echo)
+
+            click.echo("Reading the Apple Music playlist (headless browser)…")
+            try:
+                name, tracks = await _scrape(headless=True)
+            except BrowserClosed:
+                raise
+            except Exception as e:
+                click.secho(f"  headless: {e}", fg="yellow")
+            if not tracks:
+                click.secho("Headless unsuccessful — retrying with a visible window…",
+                            fg="yellow")
+                name, tracks = await _scrape(headless=False)
+        else:
+            click.echo(f"Reading the public {playlist_source_name(source)} playlist…")
+            name, tracks = await api.public_playlist_tracklist(url, click.echo)
     except BrowserClosed:
         click.secho(_CLOSED_HINT, fg="red")
         return False
     except Exception as e:
-        click.secho(f"✗ playlist extraction: {e}", fg="red")
+        click.secho(f"✗ {playlist_source_name(source)} playlist extraction: {e}", fg="red")
         return False
 
     if not tracks:
-        click.secho("No tracks extracted. Diagnostic files were saved in the app data "
-                    "folder; run `lucida config` to see its location.", fg="red")
+        detail = (" Diagnostic files were saved in the app data folder; run `lucida "
+                  "config` to see its location." if source == "apple" else "")
+        click.secho(
+            f"No public tracks were found. The playlist may be empty or private.{detail}",
+            fg="red",
+        )
         return False
 
     collection = name or "Playlist"
@@ -785,7 +795,7 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
 @_service_opts
 def playlist_cmd(url, dry_run, check_matches, service, country, downscale, out, organize_on, jobs,
                  to_fmt, bitrate, keep_orig, force, hidden):
-    """Import a public Apple Music playlist and download its tracks via lucida."""
+    """Import a public Apple Music, Spotify, or Deezer playlist."""
     if dry_run and check_matches:
         raise click.UsageError("Choose either --dry-run or --check, not both.")
     ok = asyncio.run(_playlist(url, dry_run, service, country, downscale, out, hidden,
