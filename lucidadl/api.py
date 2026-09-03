@@ -9,9 +9,10 @@ Flow (all httpx, like the Rust jelni client):
   start_download(track)   -> POST /api/load -> {handoff, server}
   run_job(handoff,server) -> poll <server>.lucida.to (Cloudflare-free) -> stream file
 
-Public Spotify and Deezer playlist metadata is normally read directly over HTTP.
-Apple Music and Spotify playlists beyond the public player's first window use a
-Playwright page because their complete track lists are rendered dynamically.
+Public Spotify, Deezer, TIDAL, Qobuz, and Amazon Music playlist metadata is normally
+read directly over HTTP. Apple Music, SoundCloud, YouTube, and long Spotify/TIDAL
+playlists use a Playwright page when their complete track lists are rendered
+dynamically.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ import os
 import re
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from . import paths, utils
 
@@ -43,6 +44,11 @@ PLAYLIST_SOURCE_NAMES = {
     "apple": "Apple Music",
     "spotify": "Spotify",
     "deezer": "Deezer",
+    "youtube": "YouTube",
+    "amazon": "Amazon Music",
+    "tidal": "TIDAL",
+    "soundcloud": "SoundCloud",
+    "qobuz": "Qobuz",
 }
 
 # Values of the #convert <select> (also the lucida downscale strings).
@@ -67,6 +73,14 @@ class SpotifyPlaylistWindow(LucidaError):
         self.total = total
         detail = f"100 of {total} titles" if total else "its first 100 titles"
         super().__init__(f"Spotify's public player exposed {detail}")
+
+
+class TidalPlaylistWindow(LucidaError):
+    """The public TIDAL embed stopped at its 50-item preview window."""
+
+    def __init__(self, name: str):
+        self.name = name
+        super().__init__("TIDAL's public player exposed its first 50 titles")
 
 
 def _retry_delay(response, attempt: int) -> int:
@@ -98,6 +112,20 @@ def playlist_source(url: str) -> str:
         return "spotify"
     if host in ("deezer.com", "www.deezer.com") and "playlist" in parts:
         return "deezer"
+    if (host == "youtube.com" or host.endswith(".youtube.com") or host == "youtu.be"):
+        if parse_qs(parsed.query).get("list"):
+            return "youtube"
+    if host == "tidal.com" or host.endswith(".tidal.com"):
+        if "playlist" in parts or "playlists" in parts:
+            return "tidal"
+    if host == "soundcloud.com" or host.endswith(".soundcloud.com"):
+        if "sets" in parts and parts.index("sets") < len(parts) - 1:
+            return "soundcloud"
+    if host in ("open.qobuz.com", "play.qobuz.com") and "playlist" in parts:
+        return "qobuz"
+    if host.startswith("music.amazon.") and any(
+            part in ("playlists", "user-playlists") for part in parts):
+        return "amazon"
     return ""
 
 
@@ -112,7 +140,7 @@ def is_apple_playlist_url(url: str) -> bool:
 def _playlist_id(url: str) -> str:
     parts = [part for part in urlparse((url or "").strip()).path.split("/") if part]
     for index, part in enumerate(parts[:-1]):
-        if part.lower() == "playlist":
+        if part.lower() in ("playlist", "playlists", "user-playlists"):
             return parts[index + 1]
     return ""
 
@@ -446,17 +474,19 @@ def _find_results_node(obj: Any, depth: int = 0) -> Optional[Dict[str, Any]]:
 
 # --- public playlist sources ------------------------------------------------
 
-async def _public_get(url: str):
+async def _public_get(url: str, headers: Optional[Dict[str, str]] = None):
     """Fetch a public playlist page/API with the same small retry policy as lucida."""
     import httpx
 
-    headers = {
+    request_headers = {
         # Spotify's public SEO response includes the declared playlist size for this
         # neutral browser UA; a detailed Chrome UA receives only the web-app shell.
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "en-US,en;q=0.8",
     }
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=30.0) as client:
+    request_headers.update(headers or {})
+    async with httpx.AsyncClient(headers=request_headers, follow_redirects=True,
+                                 timeout=30.0) as client:
         for attempt in range(3):
             try:
                 response = await client.get(url)
@@ -472,6 +502,20 @@ async def _public_get(url: str):
             response.raise_for_status()
             return response
     raise LucidaError("public playlist request failed after retrying")
+
+
+def _plain_html_text(value: str) -> str:
+    return " ".join(html_lib.unescape(re.sub(r"<[^>]+>", " ", value or "")).split())
+
+
+def _html_attributes(value: str) -> Dict[str, str]:
+    attributes = {}
+    for match in re.finditer(
+            r"([\w-]+)=(?:\"([^\"]*)\"|'([^']*)')", value or ""):
+        attributes[match.group(1).lower()] = html_lib.unescape(
+            match.group(2) if match.group(2) is not None else match.group(3)
+        )
+    return attributes
 
 
 def _spotify_playlist_from_html(raw: str) -> Tuple[str, List[Dict[str, str]]]:
@@ -696,12 +740,409 @@ async def deezer_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str
     return name, tracks
 
 
+def _tidal_playlist_from_html(raw: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Parse the public TIDAL embed, which contains up to its first 50 tracks."""
+    heading = re.search(r"<h1\b[^>]*>.*?<a\b[^>]*>(.*?)</a>", raw or "", re.I | re.S)
+    name = _plain_html_text(heading.group(1)) if heading else ""
+    tracks: List[Dict[str, str]] = []
+    for block in re.findall(
+            r"<list-item\b[^>]*product-type=[\"']track[\"'][^>]*>(.*?)</list-item>",
+            raw or "", re.I | re.S):
+        title_match = re.search(
+            r"<span\b[^>]*slot=[\"']title[\"'][^>]*>(.*?)</span>", block, re.I | re.S
+        )
+        artist_match = re.search(
+            r"<span\b[^>]*slot=[\"']artist[\"'][^>]*>(.*?)</span>", block, re.I | re.S
+        )
+        title = _plain_html_text(title_match.group(1)) if title_match else ""
+        artist = ""
+        if artist_match:
+            names = [
+                _plain_html_text(value)
+                for value in re.findall(r"<a\b[^>]*>(.*?)</a>",
+                                        artist_match.group(1), re.I | re.S)
+            ]
+            artist = ", ".join(name for name in names if name)
+            if not artist:
+                artist = _plain_html_text(artist_match.group(1))
+        if title and artist:
+            tracks.append({"title": title, "artist": artist})
+    if not name and not tracks:
+        raise LucidaError("TIDAL's public playlist data was not found (page format changed?)")
+    return name, tracks
+
+
+async def tidal_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    playlist_id = _playlist_id(url)
+    if not playlist_id:
+        raise LucidaError("TIDAL playlist ID not found in the URL")
+    response = await _public_get(f"https://embed.tidal.com/playlists/{playlist_id}")
+    name, tracks = _tidal_playlist_from_html(response.text)
+    if len(tracks) == 50:
+        # The embed has a hard 50-item window. The authenticated public web client
+        # exposes the remaining public metadata, so the CLI switches to it.
+        raise TidalPlaylistWindow(name)
+    return name, tracks
+
+
+def _amazon_playlist_from_html(raw: str) -> Tuple[str, List[Dict[str, str]]]:
+    """Parse Amazon Music's complete, server-rendered public playlist page."""
+    heading = re.search(r"<h1\b[^>]*>(.*?)</h1>", raw or "", re.I | re.S)
+    name = _plain_html_text(heading.group(1)) if heading else ""
+    indexed: Dict[int, Dict[str, str]] = {}
+    for tag in re.findall(r"<music-image-row\b([^>]*)>", raw or "", re.I):
+        attrs = _html_attributes(tag)
+        try:
+            position = int(attrs.get("index") or "")
+        except ValueError:
+            continue
+        title = " ".join(attrs.get("primary-text", "").split())
+        artist = " ".join(attrs.get("secondary-text-1", "").split())
+        href = attrs.get("primary-href", "")
+        if position > 0 and title and artist and "trackAsin=" in href:
+            indexed[position] = {"title": title, "artist": artist}
+    if indexed:
+        expected = list(range(1, max(indexed) + 1))
+        if sorted(indexed) != expected:
+            raise LucidaError("Amazon Music returned a playlist with missing positions")
+    tracks = [indexed[position] for position in sorted(indexed)]
+    declared = []
+    for count in re.findall(r"\b(\d[\d ,.]*?)\s+(?:songs?|tracks?)\b", raw or "", re.I):
+        digits = re.sub(r"\D", "", count)
+        if digits:
+            declared.append(int(digits))
+    total = max(declared) if declared else 0
+    if total and len(tracks) != total:
+        raise LucidaError(f"Amazon Music exposed only {len(tracks)} of {total} tracks")
+    if not name and not tracks:
+        raise LucidaError("Amazon Music did not return a public playlist")
+    return name, tracks
+
+
+async def amazon_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    # Amazon's ordinary response is a web-app shell; its public indexing response is
+    # fully server rendered and includes every ordered music row.
+    parsed = urlparse(url)
+    parts = [part for part in parsed.path.split("/") if part]
+    kind = next((part for part in parts if part.lower() in
+                 ("playlists", "user-playlists")), "playlists")
+    response = await _public_get(
+        f"https://music.amazon.com/{kind}/{_playlist_id(url)}",
+        {"User-Agent": "Googlebot"},
+    )
+    return _amazon_playlist_from_html(response.text)
+
+
+def _qobuz_playlist_from_obj(
+        data: Any) -> Tuple[str, List[Dict[str, str]], int, int]:
+    if not isinstance(data, dict):
+        raise LucidaError("Qobuz returned unreadable playlist data")
+    if data.get("status") == "error" or data.get("code"):
+        raise LucidaError(f"Qobuz: {data.get('message') or 'playlist unavailable'}")
+    name = " ".join(str(data.get("name") or "").split())
+    block = data.get("tracks") if isinstance(data.get("tracks"), dict) else {}
+    rows = block.get("items") if isinstance(block.get("items"), list) else []
+    tracks: List[Dict[str, str]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        title = " ".join(str(item.get("title") or "").split())
+        version = " ".join(str(item.get("version") or "").split())
+        if version and version.casefold() not in title.casefold():
+            title = f"{title} ({version})"
+        performer = item.get("performer") if isinstance(item.get("performer"), dict) else {}
+        artist = " ".join(str(performer.get("name") or "").split())
+        if title and artist:
+            tracks.append({"title": title, "artist": artist})
+    total = int(block.get("total") or data.get("tracks_count") or len(rows))
+    return name, tracks, total, len(rows)
+
+
+async def qobuz_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
+    playlist_id = _playlist_id(url)
+    if not playlist_id:
+        raise LucidaError("Qobuz playlist ID not found in the URL")
+    headers = {"X-App-Id": "712109809", "Referer": "https://open.qobuz.com/"}
+    name, tracks, total, read = "", [], 0, 0
+    for _ in range(100):
+        response = await _public_get(
+            "https://www.qobuz.com/api.json/0.2/playlist/get"
+            f"?playlist_id={playlist_id}&extra=tracks&offset={read}&limit=500",
+            headers,
+        )
+        page_name, page_tracks, page_total, page_size = _qobuz_playlist_from_obj(
+            response.json()
+        )
+        name = name or page_name
+        total = page_total or total
+        tracks.extend(page_tracks)
+        read += page_size
+        if read >= total or page_size == 0:
+            break
+        if read and read % 500 == 0:
+            log(f"  read {read} of {total} Qobuz positions")
+    if read < total or len(tracks) != total:
+        raise LucidaError(f"Qobuz exposed only {len(tracks)} of {total} tracks")
+    return name, tracks
+
+
+def _tidal_items_from_obj(
+        data: Any) -> Tuple[List[Dict[str, str]], int, int, int]:
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        raise LucidaError("TIDAL returned unreadable playlist data")
+    rows = data["items"]
+    total = int(data.get("totalNumberOfItems") or len(rows))
+    tracks: List[Dict[str, str]] = []
+    skipped = 0
+    for row in rows:
+        if not isinstance(row, dict) or str(row.get("type") or "").lower() != "track":
+            skipped += 1
+            continue
+        item = row.get("item") if isinstance(row.get("item"), dict) else {}
+        title = " ".join(str(item.get("title") or "").split())
+        version = " ".join(str(item.get("version") or "").split())
+        if version and version.casefold() not in title.casefold():
+            title = f"{title} ({version})"
+        artists = item.get("artists") if isinstance(item.get("artists"), list) else []
+        names = [" ".join(str(artist.get("name") or "").split()) for artist in artists
+                 if isinstance(artist, dict) and artist.get("name")]
+        primary = item.get("artist") if isinstance(item.get("artist"), dict) else {}
+        artist = ", ".join(dict.fromkeys(names)) or " ".join(
+            str(primary.get("name") or "").split()
+        )
+        if not title or not artist:
+            raise LucidaError("TIDAL returned a music track without title or artist")
+        tracks.append({"title": title, "artist": artist})
+    return tracks, total, len(rows), skipped
+
+
+async def tidal_browser_tracklist(page, url: str, name: str,
+                                    log=print) -> Tuple[str, List[Dict[str, str]]]:
+    """Use TIDAL's anonymous web session to paginate beyond its 50-item embed."""
+    playlist_id = _playlist_id(url)
+    if not playlist_id:
+        raise LucidaError("TIDAL playlist ID not found in the URL")
+    token, country = "", "US"
+
+    def capture(request) -> None:
+        nonlocal token, country
+        if f"/v1/playlists/{playlist_id}/items" in request.url:
+            token = request.headers.get("x-tidal-token", "")
+            country = (parse_qs(urlparse(request.url).query).get("countryCode")
+                       or ["US"])[0]
+
+    page.on("request", capture)
+    try:
+        await page.goto(f"https://tidal.com/playlist/{playlist_id}",
+                        wait_until="domcontentloaded", timeout=60_000)
+        for _ in range(30):
+            if token:
+                break
+            await page.wait_for_timeout(250)
+    finally:
+        page.remove_listener("request", capture)
+    if not token:
+        raise LucidaError("TIDAL's public playlist session did not become available")
+
+    headers = {
+        "X-Tidal-Token": token,
+        "Referer": f"https://tidal.com/playlist/{playlist_id}",
+        "Accept": "application/json",
+    }
+    tracks: List[Dict[str, str]] = []
+    read = total = skipped = 0
+    for _ in range(200):
+        response = await _public_get(
+            f"https://api.tidal.com/v1/playlists/{playlist_id}/items"
+            f"?offset={read}&limit=50&countryCode={country}"
+            "&locale=en_US&deviceType=BROWSER",
+            headers,
+        )
+        more, page_total, page_size, page_skipped = _tidal_items_from_obj(response.json())
+        total = page_total or total
+        read += page_size
+        skipped += page_skipped
+        tracks.extend(more)
+        if read >= total or page_size == 0:
+            break
+        if read % 100 == 0:
+            log(f"  read {read} of {total} TIDAL positions")
+    if read < total:
+        raise LucidaError(f"TIDAL exposed only {read} of {total} playlist positions")
+    if skipped:
+        log(f"  skipped {skipped} non-music TIDAL item(s)")
+    return name, tracks
+
+
+async def soundcloud_browser_tracklist(page, url: str,
+                                        log=print) -> Tuple[str, List[Dict[str, str]]]:
+    """Load every public SoundCloud set row, including its lazy pages."""
+    await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    try:
+        await page.wait_for_selector(".trackItem", timeout=30_000)
+    except Exception as exc:
+        raise LucidaError("SoundCloud's public track list did not become available") from exc
+    metadata = await page.evaluate("""() => {
+        const row = (window.__sc_hydration || []).find(x => x.hydratable === 'playlist');
+        const data = row && row.data || {};
+        return {name: data.title || '', total: Number(data.track_count || 0)};
+    }""")
+    name = " ".join(str((metadata or {}).get("name") or "").split())
+    total = int((metadata or {}).get("total") or 0)
+    stagnant = last_count = 0
+    for _ in range(max(20, min(1500, total * 2 or 100))):
+        count = await page.locator(".trackItem").count()
+        if total and count >= total:
+            break
+        stagnant = stagnant + 1 if count == last_count else 0
+        if stagnant >= 5:
+            break
+        last_count = count
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+        await page.wait_for_timeout(450)
+        if count and count % 100 == 0:
+            log(f"  read {count} of {total or '?'} SoundCloud positions")
+    rows = await page.locator(".trackItem").evaluate_all("""els => els.map((row, i) => ({
+        position: Number.parseInt(
+            (row.querySelector('.trackItem__number')?.textContent || '').trim(), 10
+        ) || i + 1,
+        title: (row.querySelector('.trackItem__trackTitle')?.textContent || '').trim(),
+        artist: (row.querySelector('.trackItem__username')?.textContent || '').trim(),
+    }))""")
+    indexed = {
+        int(row["position"]): {
+            "title": " ".join(str(row.get("title") or "").split()),
+            "artist": " ".join(str(row.get("artist") or "").split()),
+        }
+        for row in rows or []
+        if row.get("position") and row.get("title") and row.get("artist")
+    }
+    expected_total = total or (max(indexed) if indexed else 0)
+    if sorted(indexed) != list(range(1, expected_total + 1)):
+        raise LucidaError(
+            f"SoundCloud exposed only {len(indexed)} of {expected_total} playlist positions"
+        )
+    return name, [indexed[position] for position in sorted(indexed)]
+
+
+async def youtube_browser_tracklist(page, url: str,
+                                     log=print) -> Tuple[str, List[Dict[str, str]]]:
+    """Load a public YouTube or YouTube Music playlist to its final lazy page."""
+    parsed = urlparse(url)
+    playlist_id = (parse_qs(parsed.query).get("list") or [""])[0]
+    if not playlist_id:
+        raise LucidaError("YouTube playlist ID not found in the URL")
+    is_music = (parsed.hostname or "").lower() == "music.youtube.com"
+    target = (f"https://music.youtube.com/playlist?list={playlist_id}" if is_music else
+              f"https://www.youtube.com/playlist?list={playlist_id}")
+
+    # YouTube Music rejects the word "Headless" in an otherwise current Chromium UA.
+    # Keep the actual browser version while presenting it as normal Chrome.
+    user_agent = str(await page.evaluate("navigator.userAgent")).replace(
+        "HeadlessChrome", "Chrome"
+    )
+    await page.set_extra_http_headers({
+        "User-Agent": user_agent,
+        "Accept-Language": "en-US,en;q=0.8",
+    })
+    await page.add_init_script(
+        "Object.defineProperty(navigator, 'userAgent', {get: () => "
+        + json.dumps(user_agent) + "})"
+    )
+    await page.context.add_cookies([
+        {"name": "SOCS", "value": "CAI", "domain": ".youtube.com", "path": "/"},
+        {"name": "CONSENT", "value": "YES+cb.20210328-17-p0.en+FX+667",
+         "domain": ".youtube.com", "path": "/"},
+    ])
+    await page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+    selector = ("ytmusic-responsive-list-item-renderer" if is_music else
+                'a.ytLockupMetadataViewModelTitle[href*="index="]')
+    try:
+        await page.wait_for_selector(selector, timeout=30_000)
+    except Exception as exc:
+        raise LucidaError("YouTube's public playlist did not become available") from exc
+    body = await page.locator("body").inner_text()
+    count_match = re.search(r"\b(\d[\d ,.]*?)\s+(?:tracks?|videos?)\b", body, re.I)
+    total = int(re.sub(r"\D", "", count_match.group(1))) if count_match else 0
+    stagnant = last_count = 0
+    for _ in range(max(20, min(1500, total // 20 + 30))):
+        count = await page.locator(selector).count()
+        if total and count >= total:
+            break
+        stagnant = stagnant + 1 if count == last_count else 0
+        if stagnant >= 5:
+            break
+        last_count = count
+        await page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+        await page.wait_for_timeout(550)
+        if count and count % 100 == 0:
+            log(f"  read {count} of {total or '?'} YouTube positions")
+
+    if is_music:
+        rows = await page.locator(selector).evaluate_all("""els => els.map((row, i) => {
+            const titleNode = row.querySelector('yt-formatted-string.title');
+            const artistColumn = row.querySelector('.secondary-flex-columns .flex-column');
+            const artists = Array.from(artistColumn?.querySelectorAll(
+                'a[href*="channel/"], a[href*="browse/UC"]'
+            ) || []).map(node => (node.textContent || '').trim()).filter(Boolean);
+            return {
+                position: i + 1,
+                title: (titleNode?.getAttribute('title') || titleNode?.textContent || '').trim(),
+                artist: [...new Set(artists)].join(', ') ||
+                    (artistColumn?.textContent || '').trim(),
+            };
+        })""")
+    else:
+        rows = await page.locator(selector).evaluate_all("""els => els.map(node => {
+            const href = node.getAttribute('href') || '';
+            const position = Number(new URL(href, location.href).searchParams.get('index'));
+            const card = node.closest('yt-lockup-metadata-view-model');
+            const artist = card?.querySelector('a[href^="/channel/"], a[href^="/@"]');
+            return {
+                position,
+                title: (node.getAttribute('title') || node.textContent || '').trim(),
+                artist: (artist?.textContent || '').trim(),
+            };
+        })""")
+    indexed = {
+        int(row["position"]): {
+            "title": " ".join(str(row.get("title") or "").split()),
+            "artist": " ".join(str(row.get("artist") or "").split()),
+        }
+        for row in rows or []
+        if row.get("position") and row.get("title") and row.get("artist")
+    }
+    expected_total = total or (max(indexed) if indexed else 0)
+    if sorted(indexed) != list(range(1, expected_total + 1)):
+        raise LucidaError(
+            f"YouTube exposed only {len(indexed)} of {expected_total} playlist positions"
+        )
+    name = " ".join(str(await page.title()).replace(" - YouTube", "").split())
+    return name, [indexed[position] for position in sorted(indexed)]
+
+
+async def browser_playlist_tracklist(page, url: str,
+                                     log=print) -> Tuple[str, List[Dict[str, str]]]:
+    source = playlist_source(url)
+    if source == "soundcloud":
+        return await soundcloud_browser_tracklist(page, url, log)
+    if source == "youtube":
+        return await youtube_browser_tracklist(page, url, log)
+    raise LucidaError("This public playlist source is not supported by the browser importer")
+
+
 async def public_playlist_tracklist(url: str, log=print) -> Tuple[str, List[Dict[str, str]]]:
     source = playlist_source(url)
     if source == "spotify":
         return await spotify_tracklist(url, log)
     if source == "deezer":
         return await deezer_tracklist(url, log)
+    if source == "tidal":
+        return await tidal_tracklist(url, log)
+    if source == "amazon":
+        return await amazon_tracklist(url, log)
+    if source == "qobuz":
+        return await qobuz_tracklist(url, log)
     raise LucidaError("This public playlist source is not supported by the HTTP importer")
 
 

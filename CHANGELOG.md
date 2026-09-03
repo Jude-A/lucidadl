@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-03
+
+### Added
+- Public YouTube and YouTube Music playlists now use the complete browser-rendered
+  list, including lazy-loaded pages, with the more precise YouTube Music artist data
+  when that URL is supplied.
+- Public Amazon Music, TIDAL, SoundCloud, and Qobuz playlists now use the same ordered
+  extraction, preview, match-checking, correction, download, and resume flow as Apple
+  Music, Spotify, and Deezer.
+
+### Changed
+- Long TIDAL playlists automatically move beyond the public player's first 50 items;
+  large Amazon, Qobuz, SoundCloud, and YouTube playlists are checked against their
+  declared size so a known partial list is never accepted silently.
+- Playlist help and the interactive menu now present one service-neutral entry point
+  for all supported public streaming links.
+
 ## [1.3.1] - 2026-09-03
 
 ### Fixed

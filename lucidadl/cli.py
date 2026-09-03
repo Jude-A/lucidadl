@@ -720,7 +720,8 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
     source = playlist_source(url)
     if not source:
         click.secho(
-            "Paste a public Apple Music, Spotify, or Deezer playlist link.", fg="red"
+            "Paste a supported public streaming playlist link. Run `lucida playlist "
+            "--help` to see the services.", fg="red"
         )
         return False
 
@@ -746,6 +747,16 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
                 click.secho("Headless unsuccessful — retrying with a visible window…",
                             fg="yellow")
                 name, tracks = await _scrape(headless=False)
+        elif source in ("soundcloud", "youtube"):
+            click.echo(
+                f"Reading the public {playlist_source_name(source)} playlist "
+                "(headless browser)…"
+            )
+            async with lucida_context(headless=True) as ctx:
+                page = await get_page(ctx)
+                name, tracks = await api.browser_playlist_tracklist(
+                    page, url, click.echo
+                )
         else:
             click.echo(f"Reading the public {playlist_source_name(source)} playlist…")
             try:
@@ -758,6 +769,16 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
                     page = await get_page(ctx)
                     name, tracks = await api.spotify_browser_tracklist(
                         page, url, limited.name, limited.total, click.echo
+                    )
+            except api.TidalPlaylistWindow as limited:
+                click.echo(
+                    "TIDAL returned its 50-item public window — reading the full list "
+                    "in a headless browser…"
+                )
+                async with lucida_context(headless=True) as ctx:
+                    page = await get_page(ctx)
+                    name, tracks = await api.tidal_browser_tracklist(
+                        page, url, limited.name, click.echo
                     )
     except BrowserClosed:
         click.secho(_CLOSED_HINT, fg="red")
@@ -805,7 +826,11 @@ async def _playlist(url, dry_run, service, country, downscale, out, hidden,
 @_service_opts
 def playlist_cmd(url, dry_run, check_matches, service, country, downscale, out, organize_on, jobs,
                  to_fmt, bitrate, keep_orig, force, hidden):
-    """Import a public Apple Music, Spotify, or Deezer playlist."""
+    """Import a public playlist from a supported streaming service.
+
+    Apple Music, Spotify, Deezer, YouTube, YouTube Music, Amazon Music, TIDAL,
+    SoundCloud, and Qobuz links are recognized automatically.
+    """
     if dry_run and check_matches:
         raise click.UsageError("Choose either --dry-run or --check, not both.")
     ok = asyncio.run(_playlist(url, dry_run, service, country, downscale, out, hidden,

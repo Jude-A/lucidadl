@@ -10,14 +10,14 @@ commands and an interactive terminal interface.
 
 lucidadl downloads tracks and albums in parallel, organizes them from their metadata,
 can convert them locally with ffmpeg, accepts large `.txt` batches, and imports public
-Apple Music, Spotify, and Deezer playlists with match checking and reliable resume. It
+playlists from eight major streaming services with match checking and reliable resume. It
 intentionally remains a lightweight personal tool rather than a music-library or
 streaming-account platform.
 
 > Use lucidadl only for content you are entitled to download. You are responsible for
 > complying with applicable law and with the terms of the services involved. This
-> project is not affiliated with lucida.to, Apple, Spotify, Deezer, Qobuz, Amazon,
-> or any streaming service.
+> project is not affiliated with lucida.to, Apple, Spotify, Deezer, YouTube, Amazon,
+> TIDAL, SoundCloud, Qobuz, or any streaming service.
 
 ## Highlights
 
@@ -27,8 +27,9 @@ streaming-account platform.
 - FLAC source downloads and optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion.
 - Tag-based organization under `Artists/<Artist>/<Album>/`.
 - Batch downloads from any `.txt` file, without modifying the source list.
-- Public Apple Music, Spotify, and Deezer playlist imports with match checking, resume,
-  ordered tracks, and a portable `.m3u8` file.
+- Public Apple Music, Spotify, Deezer, YouTube/YouTube Music, Amazon Music, TIDAL,
+  SoundCloud, and Qobuz playlist imports with match checking, resume, ordered tracks,
+  and a portable `.m3u8` file.
 - Existence-aware deduplication, safe matching, and one-command retry for failures.
 - Guided first-run setup, diagnostics, progress bars, and a compact interactive menu.
 
@@ -101,6 +102,11 @@ is used. When `--file` is omitted, the plural commands use `./inputs/tracks.txt`
 lucida playlist "https://music.apple.com/.../pl.xxxxxxxx"
 lucida playlist "https://open.spotify.com/playlist/xxxxxxxx"
 lucida playlist "https://www.deezer.com/playlist/xxxxxxxx"
+lucida playlist "https://music.youtube.com/playlist?list=xxxxxxxx"
+lucida playlist "https://music.amazon.com/playlists/xxxxxxxx"
+lucida playlist "https://tidal.com/playlist/xxxxxxxx"
+lucida playlist "https://soundcloud.com/user/sets/xxxxxxxx"
+lucida playlist "https://open.qobuz.com/playlist/xxxxxxxx"
 ```
 
 lucidadl detects the service from the URL, reads its public track list, resolves each
@@ -132,11 +138,13 @@ If a playlist is interrupted, `lucida retry` resumes it with its original folder
 settings, and track numbers. Existing files are skipped, and the `.m3u8` is rebuilt when
 the run finishes. Repeating the same song at two different positions is supported.
 
-Only public playlists are read: lucidadl does not connect to or modify an Apple Music,
-Spotify, or Deezer account. Short Spotify playlists use the fast public player; longer
-ones automatically switch to a headless browser and scroll Spotify's public list until
-every position has been read. Cross-service playlist translation and account
-authorization remain the responsibility of a separate companion project.
+Only public playlists are read: lucidadl does not connect to or modify a streaming
+account. Deezer, Amazon Music, and Qobuz are read directly; short Spotify and TIDAL
+lists use their fast public players. Apple Music, YouTube, SoundCloud, and longer
+Spotify/TIDAL lists automatically use a headless browser to load every public position.
+The import stops with a clear error instead of accepting a known partial list.
+Cross-service playlist translation and account authorization remain the responsibility
+of a separate companion project.
 
 ## Interactive menu
 
