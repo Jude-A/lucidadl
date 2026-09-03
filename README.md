@@ -1,37 +1,46 @@
-# lucidadl
+# lucidadl — Lucida downloader for tracks, albums and playlists
+
+![lucidadl — Lucida downloader for tracks, albums and playlists](https://raw.githubusercontent.com/Jude-A/lucidadl/main/docs/assets/lucidadl-social-preview.png)
 
 [![PyPI](https://img.shields.io/pypi/v/lucidadl.svg)](https://pypi.org/project/lucidadl/)
 [![CI](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml/badge.svg)](https://github.com/Jude-A/lucidadl/actions/workflows/ci.yml)
 [![Python versions](https://img.shields.io/pypi/pyversions/lucidadl.svg)](https://pypi.org/project/lucidadl/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A small, fast music downloader for [lucida.to](https://lucida.to), with both direct
-commands and an interactive terminal interface.
+**A small Python CLI and terminal interface for downloading music through
+[lucida.to](https://lucida.to).**
 
-lucidadl downloads tracks and albums in parallel, organizes them from their metadata,
-can convert them locally with ffmpeg, accepts large `.txt` batches, and imports public
-playlists from eight major streaming services with match checking and reliable resume. It
-intentionally remains a lightweight personal tool rather than a music-library or
-streaming-account platform.
+Paste a track, album, text list, or public playlist. lucidadl extracts the titles, finds
+matching Qobuz or Amazon Music results through Lucida, downloads them in parallel, and
+keeps your library organized.
+
+> **Official project:** [github.com/Jude-A/lucidadl](https://github.com/Jude-A/lucidadl)
+>
+> Install lucidadl only from [PyPI](https://pypi.org/project/lucidadl/) or this
+> repository's [GitHub releases](https://github.com/Jude-A/lucidadl/releases). No
+> standalone Windows `.exe` is currently distributed.
+
+## What makes lucidadl useful?
+
+| Input | Result |
+|---|---|
+| Track or album search | Automatic Qobuz search with Amazon fallback |
+| Large `.txt` list | Parallel downloads with deduplication and retry |
+| Public streaming playlist | Ordered import from eight supported services |
+| FLAC source | Optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion |
+| Interrupted playlist | Resume with the original order and folder |
+
+Supported public playlist sources: **Apple Music, Spotify, Deezer, YouTube/YouTube
+Music, Amazon Music, TIDAL, SoundCloud, and Qobuz.** Playlist sources and download
+providers are separate: playlists can originate from any supported service, while Lucida
+currently resolves downloads through **Qobuz and Amazon Music**.
+
+![lucidadl public playlist import demo](https://raw.githubusercontent.com/Jude-A/lucidadl/main/docs/assets/lucidadl-demo.gif)
 
 > Use lucidadl only for content you are entitled to download. You are responsible for
 > complying with applicable law and with the terms of the services involved. This
 > project is not affiliated with lucida.to, Apple, Spotify, Deezer, YouTube, Amazon,
 > TIDAL, SoundCloud, Qobuz, or any streaming service.
-
-## Highlights
-
-- Track and album downloads from a search (`Artist - Title`) or a direct URL.
-- Parallel HTTP downloads with no browser left running in the background.
-- Qobuz search by default, with an automatic Amazon fallback.
-- FLAC source downloads and optional local MP3, AAC, Opus, Ogg, WAV, or FLAC conversion.
-- Tag-based organization under `Artists/<Artist>/<Album>/`.
-- Batch downloads from any `.txt` file, without modifying the source list.
-- Public Apple Music, Spotify, Deezer, YouTube/YouTube Music, Amazon Music, TIDAL,
-  SoundCloud, and Qobuz playlist imports with match checking, resume, ordered tracks,
-  and a portable `.m3u8` file.
-- Existence-aware deduplication, safe matching, and one-command retry for failures.
-- Guided first-run setup, diagnostics, progress bars, and a compact interactive menu.
 
 ## Install
 
