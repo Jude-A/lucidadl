@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Downloaded tracks carrying a composite embedded track number (`6/12`) now have it
+  rewritten to the bare number (`6`) after placement, so players and devices show a
+  clean position. Already-bare numbers are left untouched.
+
 ## [1.4.0] - 2026-09-03
 
 ### Added
