@@ -110,6 +110,11 @@ def finalize_pr():
     parts = re.split(r'^---\s*$', body, flags=re.M)
     if len(parts) != 3:
         raise ValueError('Unexpected Release Please body format')
+    notes = notes.rstrip() + (
+        '\n\n### Upgrade\n\n'
+        'With pipx: `pipx upgrade lucidadl`\n\n'
+        'With pip: `pip install --upgrade lucidadl`\n'
+    )
     Path('release-pr-body.txt').write_text(parts[0].rstrip() + '\n---\n\n' + notes + '\n---\n' + parts[2].lstrip())
 
 
