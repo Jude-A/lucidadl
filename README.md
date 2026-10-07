@@ -81,11 +81,11 @@ The flake supports `x86_64-linux` and `aarch64-linux`.
 Add lucidadl to the inputs of your NixOS or Home Manager flake:
 
 ```nix
-inputs.lucidadl.url = "github:Captniz/lucidadl";
+inputs.lucidadl.url = "github:Jude-A/lucidadl";
 ```
 
 To use the same nixpkgs revision as your system, add
-`inputs.lucidadl.inputs.nixpkgs.follows = "nixpkgs";` to your inputs.
+`inputs.lucidadl.inputs.nixpkgs.follows = "nixpkgs";` to your flake.
 Update it with `nix flake update lucidadl`.
 
 ### Run or build directly
@@ -93,8 +93,8 @@ Update it with `nix flake update lucidadl`.
 For one-off use, without adding lucidadl to a system or home configuration:
 
 ```sh
-nix run github:Captniz/lucidadl
-nix build github:Captniz/lucidadl
+nix run github:Jude-A/lucidadl
+nix build github:Jude-A/lucidadl
 ```
 
 ### Install the package directly
