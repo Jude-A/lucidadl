@@ -1,3 +1,7 @@
+<!-- PR title: use fix:/feat:/perf:/revert: for Python package changes;
+     docs:/ci:/test:/build:/chore: otherwise (build: for Nix packaging).
+     See https://github.com/Jude-A/lucidadl/blob/main/CONTRIBUTING.md#pull-requests -->
+
 ## What & why
 
 <!-- Explain the purpose and resulting behavior. Include only project-relevant information.

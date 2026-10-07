@@ -74,6 +74,66 @@ lucida setup
 Installing the package creates both `lucida` and `lucidadl`. If another application
 already owns the `lucida` command, use the `lucidadl` alias for every example below.
 
+## Nix installation
+
+The flake supports `x86_64-linux` and `aarch64-linux`.
+
+Add lucidadl to the inputs of your NixOS or Home Manager flake:
+
+```nix
+inputs.lucidadl.url = "github:Jude-A/lucidadl";
+```
+
+To use the same nixpkgs revision as your system, add
+`inputs.lucidadl.inputs.nixpkgs.follows = "nixpkgs";` to your flake.
+Update it with `nix flake update lucidadl`.
+
+### Run or build directly
+
+For one-off use, without adding lucidadl to a system or home configuration:
+
+```sh
+nix run github:Jude-A/lucidadl
+nix build github:Jude-A/lucidadl
+```
+
+### Install the package directly
+
+Add the package to `environment.systemPackages` on NixOS:
+
+```nix
+{ inputs, pkgs, ... }:
+{
+  environment.systemPackages = [
+    inputs.lucidadl.packages.${pkgs.stdenv.hostPlatform.system}.default
+  ];
+}
+```
+
+For Home Manager, add the same package to `home.packages` instead.
+
+### Use the NixOS module
+
+Import `inputs.lucidadl.nixosModules.default` in your `nixosSystem` modules.
+It installs lucidadl system-wide and configures the overlay.
+
+### Use the Home Manager module
+
+Import `inputs.lucidadl.homeManagerModules.default` and enable the program:
+
+```nix
+{ inputs, ... }:
+{
+  imports = [ inputs.lucidadl.homeManagerModules.default ];
+  programs.lucidadl.enable = true;
+}
+```
+
+### Use the overlay
+
+Add `inputs.lucidadl.overlays.default` to `nixpkgs.overlays`, then install
+`pkgs.lucidadl` through `environment.systemPackages` or `home.packages`.
+
 ## Three ways to download
 
 ### 1. A track or album
