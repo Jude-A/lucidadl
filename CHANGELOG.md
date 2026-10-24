@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3](https://github.com/Jude-A/lucidadl/compare/v1.4.2...v1.4.3) (2026-10-24)
+
+
+### Fixed
+
+* allow setup when Cloudflare issues no challenge ([#23](https://github.com/Jude-A/lucidadl/issues/23)) ([bd02537](https://github.com/Jude-A/lucidadl/commit/bd025373121a548e65318e2caaca68d59e3e74ff))
+
 ## [Unreleased]
 
 ### Fixed
