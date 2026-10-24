@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2](https://github.com/Jude-A/lucidadl/compare/v1.4.1...v1.4.2) (2026-10-24)
+
+
+### Fixed
+
+* keep the audio extension of downloaded tracks ([#22](https://github.com/Jude-A/lucidadl/issues/22)) ([9990478](https://github.com/Jude-A/lucidadl/commit/99904782b1bb445680ccf8f3f8044f1181a3636e)), closes [#21](https://github.com/Jude-A/lucidadl/issues/21)
+
 ## [Unreleased]
 
 ### Fixed
