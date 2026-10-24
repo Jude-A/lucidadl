@@ -9,14 +9,14 @@
 
 python3Packages.buildPythonApplication rec {
   pname = "lucidadl";
-  version = "1.4.0";
+  version = "1.4.3";
   pyproject = true;
 
   src = fetchFromGitHub {
     owner = "Jude-A";
     repo = "lucidadl";
     rev = "v${version}";
-    hash = "sha256-KpnhhgBh8YYrfcZFklX72NQR+4mRKe674hIi2btUyS0=";
+    hash = "sha256-51ZePdFXvt0acODhMo5h0NRZZJL7SM6MNnVov6K7XAo=";
   };
 
   nativeBuildInputs = [
