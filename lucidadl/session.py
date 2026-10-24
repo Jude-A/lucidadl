@@ -16,6 +16,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Tuple
+from urllib.parse import urlsplit
 
 from playwright.async_api import (
     async_playwright, BrowserContext, Page, Error as PlaywrightError,
@@ -128,16 +129,18 @@ async def lucida_context(headless: bool = False, channel: Optional[str] = None,
 async def ensure_cleared(ctx: BrowserContext, timeout: int = 150) -> bool:
     try:
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        try:
-            await page.goto(LUCIDA + "/", wait_until="domcontentloaded", timeout=60_000)
-        except PlaywrightError:
-            pass
+        response = await page.goto(LUCIDA + "/", wait_until="domcontentloaded", timeout=60_000)
+        if response is None:
+            raise RuntimeError("Lucida did not return a page")
+        if not response.ok and not await is_challenged(page):
+            raise RuntimeError(f"Lucida returned HTTP {response.status}")
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not await is_challenged(page):
-                return True
+                return urlsplit(page.url).netloc == urlsplit(LUCIDA).netloc
             await page.wait_for_timeout(1500)
-        return not await is_challenged(page)
+        return (urlsplit(page.url).netloc == urlsplit(LUCIDA).netloc
+                and not await is_challenged(page))
     except PlaywrightError as e:
         if any(s in str(e) for s in ("closed", "Closed", "crash")):
             raise BrowserClosed(str(e))
