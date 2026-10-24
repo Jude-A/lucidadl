@@ -28,6 +28,22 @@ Review the release PR's notes and passing CI before merging. Once merged:
 **Mirror to Codeberg** runs independently on pushes to `main` and version tags. It
 preserves history and never force-pushes or deletes remote refs.
 
+GitHub is the source of truth; only this workflow should push to Codeberg. Do not
+configure `origin` with both GitHub and Codeberg push URLs: Git pushes to each
+destination separately, so Codeberg can accept a commit that GitHub rejects.
+For an existing clone with a `codeberg` remote, use:
+
+```bash
+git config --local --replace-all remote.origin.pushurl https://github.com/Jude-A/lucidadl.git
+git config --local remote.codeberg.pushurl disabled://codeberg-read-only
+git config --local remote.pushDefault origin
+```
+
+The Codeberg remote remains available for fetching. These settings apply only to
+this clone; apply them to other existing clones too. Keep GitHub's `main` protection
+against force pushes and deletion enabled. If reconciling diverged histories via
+a PR, use a merge commit, not squash or rebase, to preserve Codeberg's ancestry.
+
 A GitHub Release appears before PyPI publication completes. Publication is complete
 only when **Publish release** verifies both PyPI files.
 
