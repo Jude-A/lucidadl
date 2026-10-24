@@ -11,6 +11,13 @@ All notable changes to this project are documented here. The format is based on
   Cloudflare challenge. The browser's user agent is saved on its own, and downloads,
   search and the TUI use it without reopening the browser on every run.
 
+## [1.4.2](https://github.com/Jude-A/lucidadl/compare/v1.4.1...v1.4.2) (2026-10-24)
+
+### Fixed
+- Downloaded tracks whose name contains a dot keep their full title and their
+  audio extension. Such a track is no longer renamed to a shortened fragment
+  and no longer missing from a playlist's `.m3u8`.
+
 ## [1.4.1](https://github.com/Jude-A/lucidadl/compare/v1.4.0...v1.4.1) (2026-10-07)
 
 ### Added
@@ -180,7 +187,7 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.4.2...HEAD
 [1.4.0]: https://github.com/Jude-A/lucidadl/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Jude-A/lucidadl/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...v1.3.0
