@@ -36,7 +36,7 @@ def _is_first_run() -> bool:
 
 def _access_ready() -> bool:
     cf, user_agent = load_clearance()
-    return bool(cf and user_agent)
+    return bool(user_agent)
 
 
 # --- persisted settings -----------------------------------------------------

@@ -168,8 +168,10 @@ def load_clearance() -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
 
-async def acquire_clearance(hidden: bool = False) -> Tuple[str, str]:
+async def acquire_clearance(hidden: bool = False) -> Tuple[Optional[str], str]:
     """Open the browser briefly, clear Cloudflare, harvest cf_clearance + UA, save, close.
+    cf is None when Cloudflare let the page through without a challenge (no cookie is
+    issued then); the UA alone is enough until a 403 triggers a fresh acquire.
     Raises BrowserClosed / RuntimeError on failure."""
     async with lucida_context(hidden=hidden) as ctx:
         if not await ensure_cleared(ctx, timeout=180):
@@ -178,7 +180,5 @@ async def acquire_clearance(hidden: bool = False) -> Tuple[str, str]:
         cf = next((c["value"] for c in cookies if c["name"] == "cf_clearance"), None)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         ua = (await page.evaluate("() => navigator.userAgent")).replace("HeadlessChrome", "Chrome")
-    if not cf:
-        raise RuntimeError("cf_clearance missing after clearing Cloudflare")
     save_clearance(cf, ua)
     return cf, ua

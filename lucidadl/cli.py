@@ -293,7 +293,7 @@ async def _run(items: List[str], kind: str, service: str, country: Optional[str]
         # Get a Cloudflare cookie: reuse the saved one (no browser at all), else open
         # the browser briefly to solve it. Downloads then run over httpx (RAM-light).
         cf, ua = load_clearance()
-        if not (cf and ua):
+        if not ua:
             log("No Cloudflare cookie — briefly opening the browser…")
             try:
                 cf, ua = await acquire_clearance(hidden=hidden)
@@ -484,7 +484,7 @@ async def _search_entries(query, service, hidden=False, country=None):
     Shared by the CLI `search` prompt and the TUI's arrow-key picker."""
     cc = country or default_country(service)
     cf, ua = load_clearance()
-    if not (cf and ua):
+    if not ua:
         cf, ua = await acquire_clearance(hidden=hidden)
     client = LucidaClient(cf, ua, acquire=lambda: acquire_clearance(hidden=hidden),
                           country=cc, log=click.echo)
@@ -643,7 +643,7 @@ async def _check_playlist_matches(collection: str, items: List[str], service: st
                                   edit_path: Optional[str] = None) -> bool:
     cc = country or default_country(service)
     cf, ua = load_clearance()
-    if not (cf and ua):
+    if not ua:
         click.echo("Preparing lucida.to access for the match check…")
         try:
             cf, ua = await acquire_clearance(hidden=hidden)
@@ -999,7 +999,7 @@ async def _doctor(live: bool = False) -> bool:
     browser_ok = await chromium_installed()
     ffmpeg_ok = transcode.available()
     cf, ua = load_clearance()
-    access_ok = bool(cf and ua)
+    access_ok = bool(ua)
     music_ok, music_detail = _music_health(paths.default_music_dir())
     stale_partials = _stale_partials(paths.default_music_dir())
     playlist_run = _load_playlist_run()
