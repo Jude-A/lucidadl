@@ -810,12 +810,68 @@ with _patch.object(_cli, "chromium_installed", _AsyncMock(return_value=False)), 
 check("setup: installs a missing browser before preparing access",
       _setup_ok and _install.await_count == 1 and _access.await_count == 1)
 
+# no Cloudflare challenge -> no cf_clearance cookie; the UA alone is still saved
+from lucidadl import session as _session
+
+class _NoCookiePage:
+    url = _session.LUCIDA + "/"
+    async def goto(self, *_args, **_kwargs):
+        return type("Response", (), {"ok": True, "status": 200})()
+    async def title(self):
+        return "Lucida"
+    async def content(self):
+        return "<html><body>Lucida</body></html>"
+    async def evaluate(self, _js):
+        return "Mozilla/5.0 HeadlessChrome/130"
+
+class _NoCookieCtx:
+    pages = [_NoCookiePage()]
+    async def cookies(self, _url):
+        return [{"name": "__cf_bm", "value": "x"}]
+
+@_ctxlib.asynccontextmanager
+async def _no_cookie_context(**_kw):
+    yield _NoCookieCtx()
+
+with _patch.object(_session, "lucida_context", _no_cookie_context), \
+     _patch.object(_session, "save_clearance") as _saved:
+    _cf, _ua = _aio.run(_session.acquire_clearance())
+check("access: unchallenged page saves the UA without a cf_clearance cookie",
+      _cf is None and _ua == "Mozilla/5.0 Chrome/130"
+      and _saved.call_args.args == (None, "Mozilla/5.0 Chrome/130"))
+
+for _navigation_name, _navigation in (
+    ("DNS failure", _AsyncMock(side_effect=_session.PlaywrightError("net::ERR_NAME_NOT_RESOLVED"))),
+    ("HTTP error", _AsyncMock(return_value=type("Response", (), {"ok": False, "status": 503})())),
+    ("missing response", _AsyncMock(return_value=None)),
+):
+    with _patch.object(_session, "lucida_context", _no_cookie_context), \
+         _patch.object(_NoCookiePage, "goto", _navigation), \
+         _patch.object(_session, "save_clearance") as _saved:
+        _rejected = False
+        try:
+            _aio.run(_session.acquire_clearance())
+        except (RuntimeError, _session.PlaywrightError):
+            _rejected = True
+    check(f"access: {_navigation_name} does not save prepared access",
+          _rejected and not _saved.called)
+
+with _patch.object(_session, "lucida_context", _no_cookie_context), \
+     _patch.object(_NoCookiePage, "goto", _AsyncMock(
+         return_value=type("Response", (), {"ok": False, "status": 403})())), \
+     _patch.object(_session, "is_challenged", _AsyncMock(side_effect=[True, False])), \
+     _patch.object(_session, "save_clearance") as _saved:
+    _cf, _ua = _aio.run(_session.acquire_clearance())
+check("access: a cleared HTTP 403 challenge still prepares access", _saved.called)
+
 with _patch.object(_tui.os.path, "exists", return_value=False):
     check("tui: empty app data is detected as first run", _tui._is_first_run())
 with _patch.object(_tui, "load_clearance", return_value=(None, None)):
     check("tui: corrupt/empty access is not shown as prepared", not _tui._access_ready())
 with _patch.object(_tui, "load_clearance", return_value=("CF", "UA")):
     check("tui: complete access is shown as prepared", _tui._access_ready())
+with _patch.object(_tui, "load_clearance", return_value=(None, "UA")):
+    check("tui: cookie-less access (no challenge) is shown as prepared", _tui._access_ready())
 
 # corrupt or hand-edited settings must not prevent the TUI from starting
 with _patch.object(_tui.paths, "load_config", return_value={"jobs": "many"}):

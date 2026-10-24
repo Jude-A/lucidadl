@@ -16,6 +16,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Tuple
+from urllib.parse import urlsplit
 
 from playwright.async_api import (
     async_playwright, BrowserContext, Page, Error as PlaywrightError,
@@ -128,16 +129,18 @@ async def lucida_context(headless: bool = False, channel: Optional[str] = None,
 async def ensure_cleared(ctx: BrowserContext, timeout: int = 150) -> bool:
     try:
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
-        try:
-            await page.goto(LUCIDA + "/", wait_until="domcontentloaded", timeout=60_000)
-        except PlaywrightError:
-            pass
+        response = await page.goto(LUCIDA + "/", wait_until="domcontentloaded", timeout=60_000)
+        if response is None:
+            raise RuntimeError("Lucida did not return a page")
+        if not response.ok and not await is_challenged(page):
+            raise RuntimeError(f"Lucida returned HTTP {response.status}")
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not await is_challenged(page):
-                return True
+                return urlsplit(page.url).netloc == urlsplit(LUCIDA).netloc
             await page.wait_for_timeout(1500)
-        return not await is_challenged(page)
+        return (urlsplit(page.url).netloc == urlsplit(LUCIDA).netloc
+                and not await is_challenged(page))
     except PlaywrightError as e:
         if any(s in str(e) for s in ("closed", "Closed", "crash")):
             raise BrowserClosed(str(e))
@@ -168,8 +171,10 @@ def load_clearance() -> Tuple[Optional[str], Optional[str]]:
         return None, None
 
 
-async def acquire_clearance(hidden: bool = False) -> Tuple[str, str]:
+async def acquire_clearance(hidden: bool = False) -> Tuple[Optional[str], str]:
     """Open the browser briefly, clear Cloudflare, harvest cf_clearance + UA, save, close.
+    cf is None when Cloudflare let the page through without a challenge (no cookie is
+    issued then); the UA alone is enough until a 403 triggers a fresh acquire.
     Raises BrowserClosed / RuntimeError on failure."""
     async with lucida_context(hidden=hidden) as ctx:
         if not await ensure_cleared(ctx, timeout=180):
@@ -178,7 +183,5 @@ async def acquire_clearance(hidden: bool = False) -> Tuple[str, str]:
         cf = next((c["value"] for c in cookies if c["name"] == "cf_clearance"), None)
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         ua = (await page.evaluate("() => navigator.userAgent")).replace("HeadlessChrome", "Chrome")
-    if not cf:
-        raise RuntimeError("cf_clearance missing after clearing Cloudflare")
     save_clearance(cf, ua)
     return cf, ua

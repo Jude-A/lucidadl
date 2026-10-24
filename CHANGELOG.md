@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- `setup` no longer fails with "cf_clearance missing" when lucida.to loads without a
+  Cloudflare challenge. The browser's user agent is saved on its own, and downloads,
+  search and the TUI use it without reopening the browser on every run.
+
 ## [1.4.2](https://github.com/Jude-A/lucidadl/compare/v1.4.1...v1.4.2) (2026-10-24)
 
 ### Fixed
