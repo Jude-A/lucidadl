@@ -34,6 +34,14 @@ _sf = utils.sanitize_filename(_long_name)
 check("sanitize_filename keeps .flac", _sf.endswith(".flac"))
 check("sanitize_filename capped", len(_sf) <= 192)
 check("sanitize_filename strips bad chars", "/" not in utils.sanitize_filename("a/b:c.zip"))
+# A name that merely CONTAINS a dot ("Song. Extended Version Here") has no file
+# extension: the text after the last dot is part of the title and must survive
+# intact, and the name must not be truncated to a made-up extension.
+check("sanitize_filename keeps a dotted title intact",
+      utils.sanitize_filename("Song. Extended Version Here")
+      == "Song. Extended Version Here")
+check("sanitize_filename keeps a dotted title with a short tail",
+      utils.sanitize_filename("Mr. Blue Sky") == "Mr. Blue Sky")
 
 # services / country
 check("normalize amazon_music", normalize_service("amazon_music") == "amazon")
@@ -446,6 +454,21 @@ check("m3u8 numeric ordering survives mixed zero-padding",
       ["02 - Second.flac", "005 - Fifth.flac", "100 - Last.flac"])
 _sh.rmtree(_d5, ignore_errors=True)
 
+# A downloaded track whose title contains a dot keeps its audio extension, so the
+# playlist sidecar still lists it instead of silently dropping the track.
+_d7 = tempfile.mkdtemp(prefix="lucidadl_dotted_")
+_plf2 = _os.path.join(_d7, "Playlists", "Dotted")
+_os.makedirs(_plf2)
+_dotted = utils.sanitize_filename("03 - Song. Extended Version Here.flac")
+with open(_os.path.join(_plf2, _dotted), "wb") as _fh:
+    _fh.write(b"x")
+_m3u2 = _org.write_playlist_m3u(_d7, "Dotted")
+check("m3u8: a dotted track name keeps its extension and stays listed",
+      _dotted == "03 - Song. Extended Version Here.flac" and _m3u2
+      and "03 - Song. Extended Version Here.flac"
+      in open(_m3u2, encoding="utf-8").read())
+_sh.rmtree(_d7, ignore_errors=True)
+
 # downloader meta builders
 from lucidadl.downloader import _track_meta as _tm, _join_artists as _ja
 check("_join_artists None -> ''", _ja(None) == "")
@@ -702,7 +725,7 @@ check("transcode cmd has -b:a 192k",
 
 # fast HTTP path parsing (raw SvelteKit JSON5 blob -> tracks + helpers)
 import pyjson5
-from lucidadl.api import _between, _filename_from_cd, _retry_delay
+from lucidadl.api import _between, _filename_from_cd, _download_filename, _retry_delay
 _alb = ('{info:{success:true,type:"album",title:"Cal",tracks:['
         '{title:"A",url:"https://q/track/1",csrf:"C1",csrfFallback:"F1",producers:["p"]},'
         '{title:"B",url:"https://q/track/2",csrf:"C2",csrfFallback:null,producers:null}'
@@ -725,6 +748,19 @@ check("_between slices blob",
                ',{"type":"data","data":', ',"uses":{"url":1}}];') == "{a:1}")
 check("filename from content-disposition",
       _filename_from_cd('attachment; filename="01 - Song.flac"') == "01 - Song.flac")
+check("download filename keeps a real media extension",
+      _download_filename('attachment; filename="01 - Song.flac"', "Song", "flac")
+      == "01 - Song.flac")
+check("download filename adds the extension to a name that only has a dot",
+      _download_filename('attachment; filename="Song. Extended Version Here"',
+                         "Song", "flac") == "Song. Extended Version Here.flac")
+check("download filename adds the extension when the name has none",
+      _download_filename('attachment; filename="Song"', "Song", "flac") == "Song.flac")
+check("download filename falls back to the track title without a header",
+      _download_filename("", "Song", "flac") == "Song.flac")
+check("download filename keeps an album archive",
+      _download_filename('attachment; filename="Album.zip"', "Album", "zip")
+      == "Album.zip")
 
 class _RetryResponse:
     headers = {"Retry-After": "99"}

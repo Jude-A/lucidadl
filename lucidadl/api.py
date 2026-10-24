@@ -64,6 +64,11 @@ _EXT_BY_CTYPE = {
     "audio/mp4": "m4a", "audio/m4a": "m4a", "audio/aac": "m4a", "audio/ogg": "ogg",
     "audio/opus": "opus", "audio/wav": "wav", "audio/x-wav": "wav", "application/zip": "zip",
 }
+# Extensions a downloaded file may legitimately carry. A server file name that
+# only CONTAINS a dot ("Mr. Blue Sky") has none of them, and must not be stored
+# as if it did: the track would end up without a usable audio extension.
+_MEDIA_SUFFIXES = tuple("." + e for e in sorted(
+    set(_EXT_BY_CTYPE.values()) | {"aac", "alac", "aiff", "aif"}))
 
 
 class LucidaError(RuntimeError):
@@ -402,9 +407,7 @@ class LucidaClient:
                 raise LucidaError(f"download HTTP {resp.status_code}")
             headers = {k.lower(): v for k, v in resp.headers.items()}
             ext = _EXT_BY_CTYPE.get(headers.get("content-type", "").split(";")[0].strip().lower(), "flac")
-            fname = _filename_from_cd(headers.get("content-disposition", "")) or f"{base_name}.{ext}"
-            if "." not in os.path.basename(fname):
-                fname = f"{fname}.{ext}"
+            fname = _download_filename(headers.get("content-disposition", ""), base_name, ext)
             dest = self._unique_dest(dest_dir, fname)
             part = _long(dest + ".part")
             try:
@@ -1402,6 +1405,21 @@ def _filename_from_cd(cd: str) -> Optional[str]:
     m = re.search(r"filename\*\s*=\s*(?:UTF-8'')?\"?([^\";]+)", cd, re.I) or \
         re.search(r'filename\s*=\s*"?([^";]+)"?', cd, re.I)
     return unquote(m.group(1)).strip() if m else None
+
+
+def _download_filename(cd: str, base_name: str, ext: str) -> str:
+    """The on-disk name of a downloaded file.
+
+    The name from the server's Content-Disposition is preferred, but it must
+    carry a real media extension: a name that merely contains a dot ("Mr. Blue
+    Sky") is a title, not a file name, and storing it as-is would leave the
+    track without a usable extension — it would then be skipped when the
+    playlist's .m3u8 is written.
+    """
+    fname = _filename_from_cd(cd) or f"{base_name}.{ext}"
+    if not fname.lower().endswith(_MEDIA_SUFFIXES):
+        fname = f"{fname}.{ext}"
+    return fname
 
 
 def _long(path: str) -> str:

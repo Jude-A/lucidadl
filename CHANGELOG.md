@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Downloaded tracks whose name contains a dot keep their full title and their
+  audio extension. Such a track is no longer renamed to a shortened fragment
+  and no longer missing from a playlist's `.m3u8`.
+
 ## [1.4.1](https://github.com/Jude-A/lucidadl/compare/v1.4.0...v1.4.1) (2026-10-07)
 
 ### Added

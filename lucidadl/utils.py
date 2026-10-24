@@ -12,6 +12,12 @@ from typing import Any, Dict, List, Optional
 # Windows-forbidden filename chars + control chars.
 _INVALID = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+# A real file extension: a dot plus a short run of letters/digits (".flac").
+# os.path.splitext() treats every character after the LAST dot as the extension,
+# so a name that merely CONTAINS a dot ("Mr. Blue Sky") has no extension at all
+# and must not have its tail shortened as if it were one.
+_REAL_EXTENSION = re.compile(r"\.[A-Za-z0-9]{1,12}")
+
 
 def sanitize(name: str, fallback: str = "untitled") -> str:
     name = (name or "").strip()
@@ -25,7 +31,10 @@ def sanitize(name: str, fallback: str = "untitled") -> str:
 def sanitize_filename(fname: str, fallback: str = "download") -> str:
     """Sanitize a real on-disk filename WITHOUT truncating its extension."""
     root, ext = os.path.splitext(fname or "")
-    ext = ext[:12]  # guard against absurd 'extensions'
+    if not _REAL_EXTENSION.fullmatch(ext):
+        # Not an extension but the tail of a title ("Song. Extended Version
+        # Here"): keep the whole name, so nothing is cut off.
+        root, ext = (fname or ""), ""
     stem = sanitize(root, fallback)
     budget = max(1, 180 - len(ext))
     return (stem[:budget] or fallback) + ext
