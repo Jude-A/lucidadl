@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.3](https://github.com/Jude-A/lucidadl/compare/v1.4.2...v1.4.3) (2026-10-24)
+
 ### Fixed
 - `setup` no longer fails with "cf_clearance missing" when lucida.to loads without a
   Cloudflare challenge. The browser's user agent is saved on its own, and downloads,
@@ -187,7 +189,7 @@ First public release.
 - **Fixed, configurable download directory** (`~/Downloads/music` by default;
   `lucida config --music`, or the `LUCIDADL_MUSIC` env var).
 
-[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.4.2...HEAD
+[Unreleased]: https://github.com/Jude-A/lucidadl/compare/v1.4.3...HEAD
 [1.4.0]: https://github.com/Jude-A/lucidadl/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Jude-A/lucidadl/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Jude-A/lucidadl/compare/v1.2.0...v1.3.0
