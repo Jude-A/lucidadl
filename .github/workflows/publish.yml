@@ -172,6 +172,7 @@ jobs:
           hash=$(nix store prefetch-file --unpack --json "https://github.com/Jude-A/lucidadl/archive/refs/tags/$TAG.tar.gz" | python -c 'import json,sys; print(json.load(sys.stdin)["hash"])')
           python scripts/release.py nix --tag "$TAG" --hash "$hash"
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        id: nix_pr
         if: steps.nix.outputs.available == 'true'
         with:
           token: ${{ steps.app.outputs.token }}
@@ -179,4 +180,10 @@ jobs:
           add-paths: nix/default.nix
           commit-message: 'chore(nix): update published lucidadl version'
           title: 'chore(nix): package ${{ needs.build.outputs.tag }}'
-          body: 'Update the Nix package to the release verified on GitHub and PyPI. The Nix CI must pass before merging.'
+          body: 'Update the Nix package to the release verified on GitHub and PyPI. The Nix CI must pass before merging.'     
+      - name: Enable auto-merge for the Nix update
+        if: steps.nix_pr.outputs.pull-request-number != ''
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.nix_pr.outputs.pull-request-number }}
+        run: gh pr merge "$PR_NUMBER" --auto --squash
