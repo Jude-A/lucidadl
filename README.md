@@ -36,11 +36,11 @@ providers are separate: playlists can originate from any supported service, whil
 lucidadl resolves downloads through Lucida's **Qobuz, Amazon Music, and GrilledCheese**
 providers when they are available.
 
-> **Upstream status — last checked 26 October 2026:** lucida.to remains unstable. Amazon
-> Music resolves in automatic, US, UK, and Japan modes. Qobuz search and metadata are
-> available again through a Mexico account, but a real download ended with an upstream
-> polling error. GrilledCheese exposes no account, while SoundCloud resolves metadata but
-> still has no validated final download. This is upstream service status, not a
+> **Upstream status — last checked 12 November 2026:** lucida.to remains unstable. Amazon
+> Music resolves in automatic, US, UK, and Japan modes. Qobuz no longer exposes an account
+> and its search currently returns no results. GrilledCheese also exposes no account, while
+> SoundCloud search works but metadata resolution is inconsistent and no final download has
+> been validated. This is upstream service status, not a
 > limitation of playlist importing. Run `lucida setup` before retrying, and expect
 > availability to change without a lucidadl release.
 
